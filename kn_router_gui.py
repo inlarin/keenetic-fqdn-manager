@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from concurrent.futures import ThreadPoolExecutor
 import tkinter.font as tkfont
 import urllib.request
 from enum import Enum
@@ -25,7 +26,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Callable, Optional
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '0.8.0'
+APP_VERSION = '0.8.1'
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
 DEFAULT_TELNET_PORT = 23
@@ -1658,32 +1659,40 @@ class App(tk.Tk):
         self._bootstrap_populate()
 
     def _bootstrap_test_all(self):
-        self.bootstrap_status_var.set('Testing TCP reachability on port 443…')
-        # Clear previous results so rows show as "—" during the run
+        self.bootstrap_status_var.set(
+            f'Testing TCP reachability on port 443 (parallel, up to 2s each)…')
+        # Clear previous results so rows render as "—" while tests run
         self.bootstrap_reach_results = {}
         self._bootstrap_populate()
 
         def do():
             results: dict[str, tuple[bool, float]] = {}
-            for s in BOOTSTRAP_VPNGATE_SERVERS:
-                target = s.get('ip') or s['host']
-                results[s['host']] = check_tcp_reachable(target, 443, timeout=3.0)
-            return results
+            t0 = time.time()
+            # Run 40 TCP probes in parallel — IO-bound, threads are cheap.
+            # With max_workers = server count we finish in ~= single probe timeout.
+            def probe(srv: dict) -> tuple[str, tuple[bool, float]]:
+                target = srv.get('ip') or srv['host']
+                return srv['host'], check_tcp_reachable(target, 443, timeout=2.0)
+            with ThreadPoolExecutor(max_workers=len(BOOTSTRAP_VPNGATE_SERVERS)) as pool:
+                for host, res in pool.map(probe, BOOTSTRAP_VPNGATE_SERVERS):
+                    results[host] = res
+            return results, time.time() - t0
 
         def done(result, err):
             if err is not None:
                 self.log(f'Reachability test failed: {err}', 'err')
                 return
-            self._bootstrap_populate(result)
-            ok_count = sum(1 for v in result.values() if v[0])
-            self.bootstrap_status_var.set(
-                f'{ok_count}/{len(result)} reachable from this PC')
-            self.log(f'Bootstrap reachability: {ok_count}/{len(result)} servers up.',
-                     'ok' if ok_count else 'warn')
-            # When results arrive, sort by reach so reachable ones bubble to top
+            results, dt = result
+            ok_count = sum(1 for v in results.values() if v[0])
+            self._bootstrap_populate(results)
+            # Auto-sort by reachability so green rows come first
             self.bootstrap_sort_col = 'reach'
             self.bootstrap_sort_rev = True
-            self._bootstrap_populate()
+            self._bootstrap_populate(results)
+            self.bootstrap_status_var.set(
+                f'{ok_count}/{len(results)} reachable from this PC · {dt:.1f}s')
+            self.log(f'Bootstrap reachability: {ok_count}/{len(results)} servers reachable '
+                     f'({dt:.1f} seconds).', 'ok' if ok_count else 'warn')
 
         self.worker.run(do, on_done=done)
 

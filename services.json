@@ -477,6 +477,14 @@
       "description": "PayPal consumer + checkout.",
       "fqdn": ["paypal.com", "www.paypal.com", "paypalobjects.com", "paypal.me"],
       "ipv4_cidr": []
+    },
+    {
+      "id": "vpngate_net",
+      "name": "VPN Gate (vpngate.net)",
+      "category": "Dev",
+      "description": "SoftEther VPN Gate academic relay service (University of Tsukuba). Usually inaccessible from RU without VPN — route through the tunnel so the app can fetch the server list.",
+      "fqdn": ["vpngate.net", "www.vpngate.net"],
+      "ipv4_cidr": []
     }
   ]
 }

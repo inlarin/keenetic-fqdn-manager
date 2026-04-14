@@ -25,7 +25,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Callable, Optional
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '0.5.2'
+APP_VERSION = '0.6.0'
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
 DEFAULT_TELNET_PORT = 23
@@ -33,6 +33,103 @@ GROUP_NAME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_]{0,31}$')
 
 CONFIG_DIR = Path(os.environ.get('APPDATA', os.path.expanduser('~'))) / 'KeeneticFqdnManager'
 CONFIG_FILE = CONFIG_DIR / 'ui.json'
+
+
+def _cache_dir() -> Path:
+    """Prefer folder next to the .exe / .py. Fall back to %APPDATA% if the
+    exe folder is read-only (e.g. installed under Program Files)."""
+    if getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS'):
+        base = Path(os.path.dirname(sys.executable))
+    else:
+        base = Path(os.path.dirname(os.path.abspath(__file__)))
+    candidate = base / 'cache'
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        test = candidate / '.wtest'
+        test.write_text('')
+        test.unlink()
+        return candidate
+    except Exception:
+        fb = CONFIG_DIR / 'cache'
+        fb.mkdir(parents=True, exist_ok=True)
+        return fb
+
+
+CACHE_DIR = _cache_dir()
+CACHE_FILE = CACHE_DIR / 'cache.json'
+
+
+class DiskCache:
+    """Single-file JSON cache with per-entry TTL. Thread-safe for our use
+    (one writer from the worker thread at a time)."""
+    def __init__(self, path: Path):
+        self.path = path
+        self.data: dict = {'version': 1, 'entries': {}}
+        self._lock = threading.Lock()
+        self._load()
+
+    def _load(self):
+        try:
+            self.data = json.loads(self.path.read_text(encoding='utf-8'))
+            if 'entries' not in self.data:
+                self.data['entries'] = {}
+        except Exception:
+            self.data = {'version': 1, 'entries': {}}
+
+    def _save(self):
+        try:
+            self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2),
+                                 encoding='utf-8')
+        except Exception:
+            pass
+
+    def get(self, key: str, max_age: float) -> Optional[object]:
+        with self._lock:
+            entry = self.data['entries'].get(key)
+            if not entry:
+                return None
+            age = time.time() - entry.get('fetched_at', 0)
+            if age > max_age:
+                return None
+            return entry.get('value')
+
+    def age(self, key: str) -> Optional[float]:
+        with self._lock:
+            entry = self.data['entries'].get(key)
+            if not entry:
+                return None
+            return time.time() - entry.get('fetched_at', 0)
+
+    def set(self, key: str, value) -> None:
+        with self._lock:
+            self.data['entries'][key] = {
+                'fetched_at': time.time(),
+                'value': value,
+            }
+            self._save()
+
+    def clear(self) -> None:
+        with self._lock:
+            self.data = {'version': 1, 'entries': {}}
+            self._save()
+
+    def size_bytes(self) -> int:
+        try:
+            return self.path.stat().st_size
+        except Exception:
+            return 0
+
+    def num_entries(self) -> int:
+        return len(self.data.get('entries', {}))
+
+
+CACHE = DiskCache(CACHE_FILE)
+
+# TTL defaults per source class (seconds)
+TTL_VPNGATE      = 5 * 60
+TTL_V2FLY        = 6 * 60 * 60
+TTL_IP_PROVIDER  = 24 * 60 * 60
+TTL_ASN          = 24 * 60 * 60
 
 CATEGORY_ICON = {
     'AI': '🤖', 'Video': '📺', 'Music': '🎵', 'Messaging': '💬',
@@ -76,106 +173,177 @@ def _http_get(url: str, timeout: float = 20.0) -> str:
         return resp.read().decode('utf-8', errors='replace')
 
 
-def fetch_v2fly(url: str) -> list[str]:
+def _cached(key: str, ttl: float, producer: Callable, force: bool = False):
+    """Return cached value for key if fresh, else produce, cache, return."""
+    if not force:
+        hit = CACHE.get(key, ttl)
+        if hit is not None:
+            return hit
+    value = producer()
+    CACHE.set(key, value)
+    return value
+
+
+def fetch_v2fly(url: str, force: bool = False) -> list[str]:
     """Parse v2fly domain-list-community format.
     We accept `domain:X` and `full:X`; drop `keyword:`, `regexp:`, `include:`
     and comment-only / empty lines."""
-    text = _http_get(url)
-    out: set[str] = set()
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        if '#' in line:
-            line = line.split('#', 1)[0].strip()
-        if not line:
-            continue
-        if ':' in line:
-            prefix, rest = line.split(':', 1)
-            prefix = prefix.lower().strip()
-            rest = rest.strip().split()[0] if rest.strip() else ''
-            if prefix in ('domain', 'full') and rest:
-                out.add(rest.lower())
-        else:
-            # plain domain per line
-            if ' ' not in line:
-                out.add(line.lower())
-    return sorted(out)
-
-
-def fetch_plain_text(url: str) -> list[str]:
-    """Generic: one domain per line; # for comments."""
-    text = _http_get(url)
-    out: set[str] = set()
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        if '#' in line:
-            line = line.split('#', 1)[0].strip()
-        if line and ' ' not in line and '/' not in line:
-            out.add(line.lower())
-    return sorted(out)
-
-
-def fetch_cloudflare_v4() -> list[str]:
-    text = _http_get('https://www.cloudflare.com/ips-v4')
-    return sorted({ln.strip() for ln in text.splitlines() if ln.strip() and '/' in ln})
-
-
-def fetch_github_meta() -> list[str]:
-    data = json.loads(_http_get('https://api.github.com/meta'))
-    ips: set[str] = set()
-    for key in ('web', 'api', 'git', 'packages', 'hooks'):
-        for entry in data.get(key, []):
-            if ':' not in entry and '/' in entry:  # IPv4 CIDR
-                ips.add(entry)
-    return sorted(ips)
-
-
-def fetch_fastly() -> list[str]:
-    data = json.loads(_http_get('https://api.fastly.com/public-ip-list'))
-    return sorted({a for a in data.get('addresses', []) if '/' in a})
-
-
-def fetch_aws_service(service_tag: str) -> list[str]:
-    data = json.loads(_http_get('https://ip-ranges.amazonaws.com/ip-ranges.json'))
-    return sorted({
-        p['ip_prefix'] for p in data.get('prefixes', [])
-        if p.get('service') == service_tag and 'ip_prefix' in p
-    })
-
-
-def fetch_google_ipranges(name: str = 'goog') -> list[str]:
-    """name is 'goog' (all Google) or 'cloud' (GCP)."""
-    data = json.loads(_http_get(f'https://www.gstatic.com/ipranges/{name}.json'))
-    return sorted({
-        p['ipv4Prefix'] for p in data.get('prefixes', []) if 'ipv4Prefix' in p
-    })
-
-
-def fetch_oracle_ranges(service: str = '') -> list[str]:
-    data = json.loads(_http_get('https://docs.oracle.com/iaas/tools/public_ip_ranges.json'))
-    out: set[str] = set()
-    for region in data.get('regions', []):
-        for cidr in region.get('cidrs', []):
-            if service and service not in cidr.get('tags', []):
+    def produce():
+        text = _http_get(url)
+        out: set[str] = set()
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
                 continue
-            if '/' in cidr.get('cidr', ''):
-                out.add(cidr['cidr'])
-    return sorted(out)
+            if '#' in line:
+                line = line.split('#', 1)[0].strip()
+            if not line:
+                continue
+            if ':' in line:
+                prefix, rest = line.split(':', 1)
+                prefix = prefix.lower().strip()
+                rest = rest.strip().split()[0] if rest.strip() else ''
+                if prefix in ('domain', 'full') and rest:
+                    out.add(rest.lower())
+            else:
+                if ' ' not in line:
+                    out.add(line.lower())
+        return sorted(out)
+    return _cached(f'v2fly:{url}', TTL_V2FLY, produce, force)
 
 
-def fetch_asn_prefixes(asn: int) -> list[str]:
+def fetch_plain_text(url: str, force: bool = False) -> list[str]:
+    """Generic: one domain per line; # for comments."""
+    def produce():
+        text = _http_get(url)
+        out: set[str] = set()
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if '#' in line:
+                line = line.split('#', 1)[0].strip()
+            if line and ' ' not in line and '/' not in line:
+                out.add(line.lower())
+        return sorted(out)
+    return _cached(f'plain:{url}', TTL_V2FLY, produce, force)
+
+
+def fetch_cloudflare_v4(force: bool = False) -> list[str]:
+    def produce():
+        text = _http_get('https://www.cloudflare.com/ips-v4')
+        return sorted({ln.strip() for ln in text.splitlines() if ln.strip() and '/' in ln})
+    return _cached('cloudflare', TTL_IP_PROVIDER, produce, force)
+
+
+def fetch_github_meta(force: bool = False) -> list[str]:
+    def produce():
+        data = json.loads(_http_get('https://api.github.com/meta'))
+        ips: set[str] = set()
+        for key in ('web', 'api', 'git', 'packages', 'hooks'):
+            for entry in data.get(key, []):
+                if ':' not in entry and '/' in entry:
+                    ips.add(entry)
+        return sorted(ips)
+    return _cached('github_meta', TTL_IP_PROVIDER, produce, force)
+
+
+def fetch_fastly(force: bool = False) -> list[str]:
+    def produce():
+        data = json.loads(_http_get('https://api.fastly.com/public-ip-list'))
+        return sorted({a for a in data.get('addresses', []) if '/' in a})
+    return _cached('fastly', TTL_IP_PROVIDER, produce, force)
+
+
+def fetch_aws_service(service_tag: str, force: bool = False) -> list[str]:
+    def produce():
+        data = json.loads(_http_get('https://ip-ranges.amazonaws.com/ip-ranges.json'))
+        return sorted({
+            p['ip_prefix'] for p in data.get('prefixes', [])
+            if p.get('service') == service_tag and 'ip_prefix' in p
+        })
+    return _cached(f'aws:{service_tag}', TTL_IP_PROVIDER, produce, force)
+
+
+def fetch_google_ipranges(name: str = 'goog', force: bool = False) -> list[str]:
+    """name is 'goog' (all Google) or 'cloud' (GCP)."""
+    def produce():
+        data = json.loads(_http_get(f'https://www.gstatic.com/ipranges/{name}.json'))
+        return sorted({
+            p['ipv4Prefix'] for p in data.get('prefixes', []) if 'ipv4Prefix' in p
+        })
+    return _cached(f'google:{name}', TTL_IP_PROVIDER, produce, force)
+
+
+def fetch_oracle_ranges(service: str = '', force: bool = False) -> list[str]:
+    def produce():
+        data = json.loads(_http_get('https://docs.oracle.com/iaas/tools/public_ip_ranges.json'))
+        out: set[str] = set()
+        for region in data.get('regions', []):
+            for cidr in region.get('cidrs', []):
+                if service and service not in cidr.get('tags', []):
+                    continue
+                if '/' in cidr.get('cidr', ''):
+                    out.add(cidr['cidr'])
+        return sorted(out)
+    return _cached(f'oracle:{service}', TTL_IP_PROVIDER, produce, force)
+
+
+def fetch_asn_prefixes(asn: int, force: bool = False) -> list[str]:
     """RIPEstat: IPv4 prefixes announced by an ASN."""
-    url = f'https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS{asn}'
-    data = json.loads(_http_get(url, timeout=30.0))
-    out: set[str] = set()
-    for entry in data.get('data', {}).get('prefixes', []):
-        pfx = entry.get('prefix', '')
-        if ':' not in pfx and '/' in pfx:
-            out.add(pfx)
-    return sorted(out)
+    def produce():
+        url = f'https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS{asn}'
+        data = json.loads(_http_get(url, timeout=30.0))
+        out: set[str] = set()
+        for entry in data.get('data', {}).get('prefixes', []):
+            pfx = entry.get('prefix', '')
+            if ':' not in pfx and '/' in pfx:
+                out.add(pfx)
+        return sorted(out)
+    return _cached(f'asn:{asn}', TTL_ASN, produce, force)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SoftEther VPN Gate
+# ─────────────────────────────────────────────────────────────────────────────
+
+VPNGATE_URL = 'http://www.vpngate.net/api/iphone/'
+
+
+def fetch_vpngate(force: bool = False) -> list[dict]:
+    """Fetch and parse the VPN Gate academic CSV.
+    Returns list of server dicts with numeric fields parsed."""
+    def produce():
+        text = _http_get(VPNGATE_URL, timeout=30.0)
+        lines = text.splitlines()
+        # Find header row (starts with '#HostName' or first CSV line)
+        header_idx = 0
+        for i, ln in enumerate(lines):
+            if ln.startswith('#HostName') or ln.startswith('HostName'):
+                header_idx = i
+                break
+        header = [h.strip().lstrip('#') for h in lines[header_idx].split(',')]
+        servers: list[dict] = []
+        for ln in lines[header_idx + 1:]:
+            if not ln or ln.startswith('*'):
+                continue
+            parts = ln.split(',')
+            if len(parts) < len(header):
+                continue
+            row = dict(zip(header, parts))
+            for k in ('Score', 'Ping', 'Speed', 'NumVpnSessions',
+                      'Uptime', 'TotalUsers', 'TotalTraffic'):
+                try:
+                    row[k] = int(row.get(k, 0) or 0)
+                except (ValueError, TypeError):
+                    row[k] = 0
+            row['SpeedMbps'] = round(row['Speed'] / 1_000_000, 1) if row['Speed'] else 0.0
+            row['UptimeDays'] = round(row['Uptime'] / 86_400_000, 1) if row['Uptime'] else 0.0
+            # We intentionally drop the huge base64 OpenVPN config from cache
+            row.pop('OpenVPN_ConfigData_Base64', None)
+            servers.append(row)
+        return servers
+    return _cached('vpngate', TTL_VPNGATE, produce, force)
 
 
 def resolve_ipv4_provider(spec: str) -> tuple[list[str], str]:
@@ -517,6 +685,61 @@ class KeeneticClient:
     def save_config(self) -> str:
         return self.run('system configuration save', timeout=15.0)
 
+    # ── SSTP interface provisioning (VPN Gate and similar) ──────────────
+    def find_free_sstp_index(self, existing: list[str]) -> int:
+        """Return the next unused integer N for interface SSTP<N>, skipping
+        existing interface names. Starts at 1 (0 is usually the user's
+        primary, keep it alone)."""
+        taken: set[int] = set()
+        for name in existing:
+            m = re.match(r'SSTP(\d+)$', name)
+            if m:
+                taken.add(int(m.group(1)))
+        n = 1
+        while n in taken:
+            n += 1
+        return n
+
+    def create_sstp_interface(self, name: str, peer: str, user: str, password: str,
+                               description: str = '', auto_connect: bool = True,
+                               via_interface: str = '') -> list[str]:
+        """Provision a new SSTP VPN-client interface on the router.
+        name: e.g. 'SSTP1' (caller picks free slot)
+        peer: hostname or IP of the SSTP server
+        user/password: cleartext credentials (VPN Gate uses 'vpn'/'vpn')
+        """
+        errs: list[str] = []
+
+        def check(out: str, step: str):
+            if 'rror' in out and 'enewed' not in out:
+                errs.append(f'{step}: {out.strip().splitlines()[-1] if out.strip() else "error"}')
+
+        check(self.run(f'interface {name}'), f'interface {name}')
+        if description:
+            safe = description.replace('"', '').strip()
+            if safe:
+                check(self.run(f'description "{safe}"'), 'description')
+        check(self.run(f'peer {peer}'),                                       'peer')
+        check(self.run(f'authentication identity {user}'),                    'auth identity')
+        check(self.run(f'authentication password {password}'),                'auth password')
+        self.run('no ccp')
+        self.run('ip mtu 1400')
+        self.run('ip tcp adjust-mss pmtu')
+        self.run('security-level public')
+        self.run('ipcp default-route')
+        self.run('ipcp dns-routes')
+        self.run('ipcp address')
+        if via_interface:
+            self.run(f'connect via {via_interface}')
+        if auto_connect:
+            self.run('connect')
+            self.run('up')
+        self.run('exit')
+        return errs
+
+    def delete_interface(self, name: str) -> str:
+        return self.run(f'no interface {name}')
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Catalog
@@ -689,12 +912,15 @@ class App(tk.Tk):
         self.nb = nb
         self.tab_services = ttk.Frame(nb)
         self.tab_state    = ttk.Frame(nb)
+        self.tab_vpngate  = ttk.Frame(nb)
         self.tab_catalog  = ttk.Frame(nb)
         nb.add(self.tab_services, text='  Services  ')
         nb.add(self.tab_state,    text='  Current state  ')
+        nb.add(self.tab_vpngate,  text='  VPN Gate  ')
         nb.add(self.tab_catalog,  text='  Catalog  ')
         self._build_services_tab()
         self._build_state_tab()
+        self._build_vpngate_tab()
         self._build_catalog_tab()
 
         log_frame = ttk.LabelFrame(main_pane, text=' Log ')
@@ -1134,6 +1360,248 @@ class App(tk.Tk):
             f'{len(groups)} FQDN groups ({exc_groups} exclusive) · '
             f'{len(ip_routes)} IP routes ({exc_ips} exclusive)')
 
+    # ── VPN Gate tab ───────────────────────────────────────────────────────
+    def _build_vpngate_tab(self):
+        f = self.tab_vpngate
+        # Top toolbar
+        top = ttk.Frame(f, padding=(0, 4))
+        top.pack(fill='x', padx=4, pady=(4, 0))
+        ttk.Button(top, text='⟳ Refresh list',
+                   command=self._on_vpngate_refresh,
+                   style='Accent.TButton').pack(side='left')
+        self.vpngate_status_var = tk.StringVar(value='Not loaded yet')
+        ttk.Label(top, textvariable=self.vpngate_status_var, foreground='#555',
+                  style='Status.TLabel').pack(side='left', padx=10)
+
+        # Filters
+        filt = ttk.LabelFrame(f, text=' Filters ', padding=6)
+        filt.pack(fill='x', padx=4, pady=4)
+        ttk.Label(filt, text='Country:').grid(row=0, column=0, sticky='e', padx=(0, 4))
+        self.vpngate_country_var = tk.StringVar(value='Any')
+        self.vpngate_country_combo = ttk.Combobox(filt, textvariable=self.vpngate_country_var,
+                                                   state='readonly', width=22)
+        self.vpngate_country_combo.grid(row=0, column=1, sticky='w')
+        self.vpngate_country_combo.bind('<<ComboboxSelected>>', lambda e: self._vpngate_repaint())
+
+        ttk.Label(filt, text='Max ping ms:').grid(row=0, column=2, sticky='e', padx=(12, 4))
+        self.vpngate_ping_var = tk.StringVar(value='1000')
+        ttk.Entry(filt, textvariable=self.vpngate_ping_var, width=6).grid(row=0, column=3, sticky='w')
+        ttk.Label(filt, text='Min Mbps:').grid(row=0, column=4, sticky='e', padx=(12, 4))
+        self.vpngate_speed_var = tk.StringVar(value='5')
+        ttk.Entry(filt, textvariable=self.vpngate_speed_var, width=6).grid(row=0, column=5, sticky='w')
+        self.vpngate_nolog_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(filt, text='No-logs only',
+                        variable=self.vpngate_nolog_var,
+                        command=self._vpngate_repaint).grid(row=0, column=6, padx=(12, 4))
+        ttk.Button(filt, text='Apply filters',
+                   command=self._vpngate_repaint).grid(row=0, column=7, padx=(12, 0))
+
+        # Table
+        tree_frame = ttk.Frame(f)
+        tree_frame.pack(fill='both', expand=True, padx=4, pady=4)
+        cols = ('country', 'host', 'ip', 'ping', 'mbps', 'uptime', 'sessions', 'log', 'op')
+        self.vpngate_tree = ttk.Treeview(tree_frame, columns=cols,
+                                           show='headings', selectmode='browse', height=18)
+        headings = {
+            'country': 'Country', 'host': 'Hostname', 'ip': 'IP',
+            'ping': 'Ping ms', 'mbps': 'Mbps', 'uptime': 'Uptime d',
+            'sessions': 'Users', 'log': 'Log policy', 'op': 'Operator',
+        }
+        widths = {'country': 90, 'host': 230, 'ip': 120, 'ping': 70, 'mbps': 70,
+                  'uptime': 80, 'sessions': 60, 'log': 90, 'op': 180}
+        for c in cols:
+            self.vpngate_tree.heading(c, text=headings[c],
+                                       command=lambda col=c: self._vpngate_sort(col))
+            self.vpngate_tree.column(c, width=widths[c], anchor='w' if c in ('country', 'host', 'ip', 'op', 'log') else 'e')
+        self.vpngate_tree.pack(side='left', fill='both', expand=True)
+        ysc = ttk.Scrollbar(tree_frame, orient='vertical', command=self.vpngate_tree.yview)
+        ysc.pack(side='right', fill='y')
+        self.vpngate_tree.configure(yscrollcommand=ysc.set)
+        self.vpngate_tree.bind('<<TreeviewSelect>>', lambda e: self._vpngate_on_select())
+
+        # Bottom action row
+        act = ttk.Frame(f, padding=(0, 4))
+        act.pack(fill='x', padx=4, pady=4)
+        ttk.Button(act, text='Copy SSTP host:port',
+                   command=self._vpngate_copy_host).pack(side='left', padx=2)
+        ttk.Button(act, text='Copy credentials (vpn/vpn)',
+                   command=self._vpngate_copy_creds).pack(side='left', padx=2)
+        self.btn_vpngate_create = ttk.Button(
+            act, text='▶ Create SSTP interface on router',
+            command=self._vpngate_create_interface,
+            style='Accent.TButton')
+        self.btn_vpngate_create.pack(side='right', padx=2)
+        ttk.Label(act, text='(creds are the fixed VPN Gate defaults: vpn / vpn)',
+                  foreground='#888', style='Status.TLabel').pack(side='right', padx=12)
+
+        # State
+        self.vpngate_all: list[dict] = []
+        self.vpngate_shown: list[dict] = []
+        self.vpngate_sort_col = 'mbps'
+        self.vpngate_sort_rev = True
+        # Attempt to show cached data on first view
+        cached = CACHE.get('vpngate', TTL_VPNGATE * 6)   # show even somewhat stale data
+        if cached:
+            self.vpngate_all = cached
+            self._vpngate_populate_country_filter()
+            self._vpngate_repaint()
+            age = CACHE.age('vpngate') or 0
+            self.vpngate_status_var.set(f'{len(cached)} servers (cached, {int(age/60)} min old)')
+
+    def _on_vpngate_refresh(self):
+        self.vpngate_status_var.set('Fetching…')
+
+        def do():
+            return fetch_vpngate(force=True)
+
+        def done(result, err):
+            if err is not None:
+                self.vpngate_status_var.set(f'Fetch failed: {err}')
+                self.log(f'VPN Gate fetch failed: {err}', 'err')
+                return
+            self.vpngate_all = result
+            self._vpngate_populate_country_filter()
+            self._vpngate_repaint()
+            self.vpngate_status_var.set(f'{len(result)} servers (fresh)')
+            self.log(f'VPN Gate: {len(result)} servers loaded.', 'ok')
+
+        self.worker.run(do, on_done=done)
+
+    def _vpngate_populate_country_filter(self):
+        countries = sorted({s.get('CountryLong', '') for s in self.vpngate_all if s.get('CountryLong')})
+        self.vpngate_country_combo.configure(values=['Any'] + countries)
+
+    def _vpngate_repaint(self):
+        self.vpngate_tree.delete(*self.vpngate_tree.get_children())
+        try: max_ping = int(self.vpngate_ping_var.get() or '99999')
+        except ValueError: max_ping = 99999
+        try: min_mbps = float(self.vpngate_speed_var.get() or '0')
+        except ValueError: min_mbps = 0
+        country = self.vpngate_country_var.get().strip()
+        nolog = self.vpngate_nolog_var.get()
+        out = []
+        for s in self.vpngate_all:
+            if country and country != 'Any' and s.get('CountryLong') != country:
+                continue
+            if s.get('Ping', 0) > max_ping:
+                continue
+            if s.get('SpeedMbps', 0) < min_mbps:
+                continue
+            if nolog and 'no logs' not in (s.get('LogType', '') or '').lower():
+                continue
+            out.append(s)
+        # Sort
+        key_map = {'country': 'CountryShort', 'host': 'HostName', 'ip': 'IP',
+                   'ping': 'Ping', 'mbps': 'SpeedMbps', 'uptime': 'UptimeDays',
+                   'sessions': 'NumVpnSessions', 'log': 'LogType', 'op': 'Operator'}
+        key = key_map.get(self.vpngate_sort_col, 'SpeedMbps')
+        out.sort(key=lambda r: (r.get(key, 0) if isinstance(r.get(key), (int, float)) else str(r.get(key, ''))),
+                 reverse=self.vpngate_sort_rev)
+        self.vpngate_shown = out
+        for s in out:
+            self.vpngate_tree.insert('', 'end', iid=s['HostName'],
+                values=(
+                    f'{s.get("CountryShort","")} {s.get("CountryLong","")}',
+                    s.get('HostName', ''),
+                    s.get('IP', ''),
+                    s.get('Ping', 0),
+                    s.get('SpeedMbps', 0),
+                    s.get('UptimeDays', 0),
+                    s.get('NumVpnSessions', 0),
+                    (s.get('LogType', '') or '')[:30],
+                    (s.get('Operator', '') or '')[:40],
+                ))
+
+    def _vpngate_sort(self, col: str):
+        if self.vpngate_sort_col == col:
+            self.vpngate_sort_rev = not self.vpngate_sort_rev
+        else:
+            self.vpngate_sort_col = col
+            self.vpngate_sort_rev = col in ('mbps', 'uptime', 'sessions')
+        self._vpngate_repaint()
+
+    def _vpngate_selected(self) -> Optional[dict]:
+        sel = self.vpngate_tree.selection()
+        if not sel:
+            return None
+        hn = sel[0]
+        for s in self.vpngate_shown:
+            if s.get('HostName') == hn:
+                return s
+        return None
+
+    def _vpngate_on_select(self):
+        pass  # reserved for future details
+
+    def _vpngate_copy_host(self):
+        s = self._vpngate_selected()
+        if not s:
+            messagebox.showinfo(APP_NAME, 'Select a server in the table.')
+            return
+        text = f'{s.get("HostName")}:443'
+        self.clipboard_clear(); self.clipboard_append(text)
+        self.log(f'Copied: {text}', 'ok')
+
+    def _vpngate_copy_creds(self):
+        self.clipboard_clear(); self.clipboard_append('vpn')
+        messagebox.showinfo(APP_NAME,
+                             'Copied "vpn" as username. Click OK, then copy again for the password.')
+        self.clipboard_clear(); self.clipboard_append('vpn')
+        self.log('Copied VPN Gate creds (vpn/vpn)', 'ok')
+
+    def _vpngate_create_interface(self):
+        if not self._ensure_connected():
+            return
+        s = self._vpngate_selected()
+        if not s:
+            messagebox.showinfo(APP_NAME, 'Select a server in the table.')
+            return
+        host = s.get('HostName', '')
+        country = s.get('CountryShort', '?')
+        existing_names = [i['name'] for i in self.interfaces]
+        idx = self.client.find_free_sstp_index(existing_names)
+        new_name = f'SSTP{idx}'
+        if not messagebox.askyesno(
+                APP_NAME,
+                f'Create SSTP interface "{new_name}" on the router?\n\n'
+                f'Peer:      {host}\n'
+                f'Country:   {country}\n'
+                f'User/Pass: vpn / vpn\n\n'
+                'The interface will attempt to connect immediately. '
+                'After creation it will appear in the main "Interface" dropdown '
+                'and can be used as a routing target for services.'):
+            return
+        self.log(f'Creating {new_name} via VPN Gate ({host})…')
+
+        def do():
+            desc = f'VPN Gate {country} {host}'
+            errs = self.client.create_sstp_interface(
+                new_name, peer=host, user='vpn', password='vpn',
+                description=desc, auto_connect=True)
+            self.client.save_config()
+            ifaces = self.client.list_interfaces()
+            return new_name, ifaces, errs
+
+        def done(result, err):
+            if err is not None:
+                self.log(f'Create interface failed: {err}', 'err')
+                messagebox.showerror(APP_NAME, str(err))
+                return
+            new_name, ifaces, errs = result
+            self.interfaces = ifaces
+            names = [i['name'] for i in ifaces]
+            self.iface_combo.configure(values=names, state='readonly')
+            if new_name in names:
+                self.iface_var.set(new_name)
+            for e in errs:
+                self.log(f'  {new_name}: {e}', 'warn')
+            self.log(f'✓ Created {new_name}. Selected as current interface.', 'ok')
+            messagebox.showinfo(APP_NAME,
+                                 f'Interface {new_name} created and set as current. '
+                                 'You can now tick services and Apply to route them through it.')
+
+        self.worker.run(do, on_done=done)
+
     # ── Catalog tab ────────────────────────────────────────────────────────
     def _build_catalog_tab(self):
         f = self.tab_catalog
@@ -1172,6 +1640,20 @@ class App(tk.Tk):
                    style='Accent.TButton').pack(side='left')
         ttk.Button(row, text='Export current catalog to file…',
                    command=self._on_export_catalog).pack(side='left', padx=(8, 0))
+
+        # Cache box
+        cache_box = ttk.LabelFrame(f, text=' Disk cache ', padding=8)
+        cache_box.pack(fill='x', padx=8, pady=6)
+        size_kb = CACHE.size_bytes() / 1024.0
+        ttk.Label(cache_box,
+                  text=f'{CACHE.num_entries()} entries, {size_kb:.1f} KB at '
+                       f'{str(CACHE_FILE)}').pack(anchor='w')
+        ttk.Label(cache_box,
+                  text='TTL: v2fly/plain-text 6h, IP providers 24h, RIPEstat 24h, VPN Gate 5 min. '
+                       'Refresh buttons ignore the cache and re-fetch.',
+                  foreground='#555', wraplength=700, justify='left').pack(anchor='w', pady=(2, 6))
+        ttk.Button(cache_box, text='Clear cache',
+                   command=self._on_cache_clear).pack(anchor='w')
 
         url_box = ttk.LabelFrame(f, text=' Import from URL ', padding=8)
         url_box.pack(fill='x', padx=8, pady=6)
@@ -1756,6 +2238,14 @@ class App(tk.Tk):
             self._show_service_details(new_svc)
 
         self.worker.run(do, on_done=done)
+
+    def _on_cache_clear(self):
+        if not messagebox.askyesno(APP_NAME,
+                'Clear the on-disk cache? Next refresh will re-fetch everything from origin.'):
+            return
+        CACHE.clear()
+        self.log('Disk cache cleared.', 'ok')
+        self._build_catalog_tab()  # refresh the Disk cache stats label
 
     def _on_export_catalog(self):
         path = filedialog.asksaveasfilename(

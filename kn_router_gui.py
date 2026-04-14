@@ -25,7 +25,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Callable, Optional
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '0.3.0'
+APP_VERSION = '0.4.0'
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
 DEFAULT_TELNET_PORT = 23
@@ -279,13 +279,18 @@ class KeeneticClient:
     def running_config(self) -> str:
         return self.run('show running-config', timeout=20.0)
 
-    def create_fqdn_group(self, name: str, domains: list[str]) -> list[str]:
+    def create_fqdn_group(self, name: str, entries: list[str],
+                          description: str = '') -> list[str]:
+        """Create/enter an object-group and include both FQDNs and IP/CIDR entries.
+        Keenetic's object-group fqdn accepts all three as `include <x>` lines."""
         errs: list[str] = []
         self.run(f'object-group fqdn {name}')
-        for d in domains:
-            out = self.run(f'include {d}')
+        if description:
+            self.run(f'description {description}')
+        for entry in entries:
+            out = self.run(f'include {entry}')
             if 'rror' in out or 'nvalid' in out.lower():
-                errs.append(f'include {d}: {out.strip().splitlines()[-1] if out.strip() else "error"}')
+                errs.append(f'include {entry}: {out.strip().splitlines()[-1] if out.strip() else "error"}')
         self.run('exit')
         return errs
 
@@ -674,13 +679,14 @@ class App(tk.Tk):
         route = next((r for r in self.state.get('dns_routes', []) if r['group'] == sid), None)
         if not route:
             return 'drifted', '● orphaned group'
-        cat_fqdn = set(svc.get('fqdn', []))
-        rtr_fqdn = set(self.state['groups'].get(sid, []))
+        cat_inc = self._svc_includes(svc)
+        rtr_inc = set(self.state['groups'].get(sid, []))
+        has_legacy = bool(self._svc_legacy_routes(svc))
         flags = []
         if route.get('reject'):
             flags.append('kill')
         label_suffix = f' ({",".join(flags)})' if flags else ''
-        if cat_fqdn == rtr_fqdn:
+        if cat_inc == rtr_inc and not has_legacy:
             return 'applied', f'● {route["interface"]}{label_suffix}'
         return 'drifted', f'⚠ {route["interface"]}{label_suffix} · drift'
 
@@ -733,13 +739,20 @@ class App(tk.Tk):
         elif state == 'drifted':
             t.insert('end', '\nApplied with drift: ', 'h2')
             t.insert('end', label + '\n', 'warn')
-            grp = self.state['groups'].get(svc['id'], [])
-            extra = set(grp) - set(svc.get('fqdn', []))
-            missing = set(svc.get('fqdn', [])) - set(grp)
+            cat_inc = self._svc_includes(svc)
+            rtr_inc = set(self.state['groups'].get(svc['id'], []))
+            missing = cat_inc - rtr_inc
+            extra   = rtr_inc - cat_inc
             if missing:
                 t.insert('end', f'  missing on router: {", ".join(sorted(missing))}\n', 'mono')
             if extra:
                 t.insert('end', f'  extra on router:   {", ".join(sorted(extra))}\n', 'mono')
+            legacy = self._svc_legacy_routes(svc)
+            if legacy:
+                t.insert('end',
+                         f'  legacy ip routes to migrate: '
+                         f'{", ".join(f"{r["network"]}/{r["mask"]} via {r["interface"]}" for r in legacy)}\n',
+                         'mono')
         else:
             t.insert('end', '\nNot applied on router.\n', 'muted')
         t.insert('end', f'\nFQDN ({len(svc.get("fqdn", []))}):\n', 'h2')
@@ -1058,43 +1071,55 @@ class App(tk.Tk):
         return True
 
     # ── Apply ─────────────────────────────────────────────────────────────
+    def _svc_legacy_routes(self, svc: dict) -> list[dict]:
+        """Legacy `ip route` entries whose subnet matches this service's
+        ipv4_cidr — left over from the pre-v0.4 model and now redundant
+        (the subnet is included directly in the object-group)."""
+        legacy = []
+        for cidr in svc.get('ipv4_cidr', []):
+            net, mask = cidr_to_mask(cidr)
+            for r in self.state.get('ip_routes', []):
+                if r['network'] == net and r['mask'] == mask:
+                    legacy.append(r)
+        return legacy
+
+    @staticmethod
+    def _svc_includes(svc: dict) -> set[str]:
+        """Combined set of includes (FQDN + IP/CIDR) for the unified object-group."""
+        return set(svc.get('fqdn', [])) | set(svc.get('ipv4_cidr', []))
+
     def _compute_apply_plan(self, selected: list[dict], iface: str, exclusive: bool) -> dict:
         """Classify each service as create / update / skip."""
         plan: dict = {'create': [], 'update': [], 'skip': []}
         for svc in selected:
             sid = svc['id']
-            cat_fqdn = set(svc.get('fqdn', []))
-            cat_ipv4 = {cidr_to_mask(c) for c in svc.get('ipv4_cidr', [])}
-
-            rtr_fqdn = set(self.state['groups'].get(sid, []))
+            cat_inc = self._svc_includes(svc)
+            rtr_inc = set(self.state['groups'].get(sid, []))
             route = next((r for r in self.state['dns_routes'] if r['group'] == sid), None)
-            # Collect rtr IP routes that match any of this service's subnets (any iface)
-            rtr_ips = {(r['network'], r['mask']): r for r in self.state['ip_routes']
-                       if (r['network'], r['mask']) in cat_ipv4}
+            legacy = self._svc_legacy_routes(svc)
 
-            if not rtr_fqdn and not route and not rtr_ips:
-                plan['create'].append({'svc': svc, 'reasons': ['new']})
+            if not rtr_inc and not route:
+                reasons = ['new']
+                if legacy:
+                    reasons.append(f'migrate {len(legacy)} legacy ip route(s)')
+                plan['create'].append({'svc': svc, 'reasons': reasons})
                 continue
 
             reasons = []
-            if rtr_fqdn != cat_fqdn:
-                diff_add = len(cat_fqdn - rtr_fqdn)
-                diff_rm  = len(rtr_fqdn - cat_fqdn)
-                if diff_add or diff_rm:
-                    reasons.append(f'domains ({diff_add}+ / {diff_rm}-)')
-            if route is None and cat_fqdn:
+            if rtr_inc != cat_inc:
+                add_n = len(cat_inc - rtr_inc)
+                rm_n  = len(rtr_inc - cat_inc)
+                if add_n or rm_n:
+                    reasons.append(f'entries ({add_n}+ / {rm_n}-)')
+            if route is None and cat_inc:
                 reasons.append('dns-proxy route missing')
             elif route is not None:
                 if route['interface'] != iface:
                     reasons.append(f'iface {route["interface"]}→{iface}')
                 if bool(route.get('reject')) != exclusive:
                     reasons.append(f'kill-switch {route.get("reject", False)}→{exclusive}')
-            for (net, mask) in cat_ipv4:
-                existing = rtr_ips.get((net, mask))
-                if existing is None:
-                    reasons.append(f'+{net}/{mask}')
-                elif existing['interface'] != iface or bool(existing.get('reject')) != exclusive:
-                    reasons.append(f'{net}/{mask} flags/iface')
+            if legacy:
+                reasons.append(f'migrate {len(legacy)} legacy ip route(s)')
 
             if reasons:
                 plan['update'].append({'svc': svc, 'reasons': reasons})
@@ -1151,39 +1176,33 @@ class App(tk.Tk):
         def do_apply():
             c = self.client
             assert c is not None
-            total_doms = total_ips = touched = 0
+            total_inc = touched = migrated = 0
             for entry in to_do:
                 svc = entry['svc']
                 group = svc['id']
                 if not GROUP_NAME_RE.match(group):
                     self.ui_queue.put(('log', ('warn', f'SKIP {svc["name"]}: invalid group id "{group}"')))
                     continue
+                includes = list(svc.get('fqdn', [])) + list(svc.get('ipv4_cidr', []))
                 c.delete_fqdn_group(group)
-                errs = c.create_fqdn_group(group, svc.get('fqdn', []))
+                errs = c.create_fqdn_group(group, includes, description=svc.get('name', ''))
                 for e in errs:
                     self.ui_queue.put(('log', ('warn', f'  {group}: {e}')))
                 c.bind_fqdn_route(group, iface, auto=True, reject=exclusive)
-                total_doms += len(svc.get('fqdn', []))
+                total_inc += len(includes)
+                suffix = ' [kill switch]' if exclusive else ''
                 self.ui_queue.put(('log', ('ok',
-                    f'✓ {svc["name"]}  →  {iface}{" [kill switch]" if exclusive else ""}  '
-                    f'({len(svc.get("fqdn", []))} FQDN)')))
+                    f'✓ {svc["name"]}  →  {iface}{suffix}  '
+                    f'({len(svc.get("fqdn", []))} FQDN + {len(svc.get("ipv4_cidr", []))} IPv4)')))
 
-                for cidr in svc.get('ipv4_cidr', []):
-                    net, mask = cidr_to_mask(cidr)
-                    # If there's already a route with same net/mask on a DIFFERENT
-                    # interface, remove it first — avoids duplicates across ifaces.
-                    for ex in list(self.state['ip_routes']):
-                        if (ex['network'] == net and ex['mask'] == mask
-                                and ex['interface'] != iface):
-                            c.delete_ip_route(ex['network'], ex['mask'], ex['interface'])
-                            self.ui_queue.put(('log', ('warn',
-                                f'  - removed stale {net}/{mask} via {ex["interface"]}')))
-                    out = c.add_ip_route(net, mask, iface, auto=True, reject=exclusive)
-                    if 'dded' in out or 'enewed' in out or 'xists' in out.lower():
-                        total_ips += 1
-                    else:
-                        self.ui_queue.put(('log', ('warn',
-                            f'  ip route {cidr}: {out.strip().splitlines()[-1] if out.strip() else "no reply"}')))
+                # Migrate: remove legacy `ip route` entries whose subnet is now
+                # inside the object-group — keeping both would be redundant.
+                for legacy in self._svc_legacy_routes(svc):
+                    c.delete_ip_route(legacy['network'], legacy['mask'], legacy['interface'])
+                    self.ui_queue.put(('log', ('warn',
+                        f'  ↳ migrated: removed legacy ip route '
+                        f'{legacy["network"]}/{legacy["mask"]} via {legacy["interface"]}')))
+                    migrated += 1
                 touched += 1
 
             for entry in plan['skip']:
@@ -1192,20 +1211,21 @@ class App(tk.Tk):
 
             c.save_config()
             cfg = c.running_config()
-            return touched, total_doms, total_ips, cfg
+            return touched, total_inc, migrated, cfg
 
         def done(result, err):
             if err is not None:
                 self.log(f'Apply failed: {err}', 'err')
                 messagebox.showerror(APP_NAME, str(err))
                 return
-            touched, total_doms, total_ips, cfg = result
+            touched, total_inc, migrated, cfg = result
             self.state = parse_running_config(cfg)
             self._refresh_state_view()
             self._populate_services()
+            extra = f', {migrated} legacy ip route(s) migrated' if migrated else ''
             self.log(
-                f'Applied {touched} service(s): {total_doms} FQDN, '
-                f'{total_ips} IPv4 routes. Config saved.', 'ok')
+                f'Applied {touched} service(s): {total_inc} includes (FQDN+IPv4){extra}. '
+                'Config saved.', 'ok')
 
         self.worker.run(do_apply, on_done=done)
 

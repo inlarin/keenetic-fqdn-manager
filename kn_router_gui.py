@@ -25,7 +25,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Callable, Optional
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '0.2.0'
+APP_VERSION = '0.2.1'
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
 DEFAULT_TELNET_PORT = 23

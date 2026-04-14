@@ -25,7 +25,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Callable, Optional
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '0.6.0'
+APP_VERSION = '0.7.0'
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
 DEFAULT_TELNET_PORT = 23
@@ -308,6 +308,54 @@ def fetch_asn_prefixes(asn: int, force: bool = False) -> list[str]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 VPNGATE_URL = 'http://www.vpngate.net/api/iphone/'
+
+# Offline bootstrap: ~10 servers picked at release time by uptime×speed/ping
+# from the live CSV. Primary purpose: let a user with NO existing VPN route
+# spin up an initial SSTP tunnel so they can *then* reach vpngate.net and
+# refresh the live list. JP entries are operated by the University of Tsukuba
+# team itself — the most stable cohort. Others are long-uptime volunteers.
+BOOTSTRAP_VPNGATE_SERVERS: list[dict] = [
+    {"host": "public-vpn-255", "ip": "219.100.37.224", "country": "JP",
+     "country_long": "Japan", "speed_mbps": 472.9, "uptime_days": 65.4,
+     "log_policy": "2weeks", "operator": "Daiyuu Nobori — Academic Use Only"},
+    {"host": "public-vpn-58",  "ip": "219.100.37.49",  "country": "JP",
+     "country_long": "Japan", "speed_mbps": 1356.3, "uptime_days": 65.4,
+     "log_policy": "2weeks", "operator": "Daiyuu Nobori — Academic Use Only"},
+    {"host": "public-vpn-225", "ip": "219.100.37.219", "country": "JP",
+     "country_long": "Japan", "speed_mbps": 459.8, "uptime_days": 65.4,
+     "log_policy": "2weeks", "operator": "Daiyuu Nobori — Academic Use Only"},
+    {"host": "public-vpn-138", "ip": "219.100.37.117", "country": "JP",
+     "country_long": "Japan", "speed_mbps": 451.8, "uptime_days": 65.4,
+     "log_policy": "2weeks", "operator": "Daiyuu Nobori — Academic Use Only"},
+    {"host": "public-vpn-208", "ip": "219.100.37.166", "country": "JP",
+     "country_long": "Japan", "speed_mbps": 562.3, "uptime_days": 65.4,
+     "log_policy": "2weeks", "operator": "Daiyuu Nobori — Academic Use Only"},
+    {"host": "vpn555964923",   "ip": "115.91.77.92",   "country": "KR",
+     "country_long": "Korea",  "speed_mbps": 788.7, "uptime_days": 31.3,
+     "log_policy": "2weeks", "operator": "volunteer"},
+    {"host": "vpn402044879",   "ip": "211.185.142.92", "country": "KR",
+     "country_long": "Korea",  "speed_mbps": 233.9, "uptime_days": 42.5,
+     "log_policy": "2weeks", "operator": "volunteer"},
+    {"host": "vpn243876497",   "ip": "14.35.204.212",  "country": "KR",
+     "country_long": "Korea",  "speed_mbps": 777.6, "uptime_days": 13.3,
+     "log_policy": "2weeks", "operator": "volunteer"},
+    {"host": "vpn801552750",   "ip": "113.22.172.28",  "country": "VN",
+     "country_long": "Vietnam","speed_mbps": 532.8, "uptime_days": 6.2,
+     "log_policy": "2weeks", "operator": "volunteer"},
+    {"host": "vpn855551265",   "ip": "122.36.8.16",    "country": "KR",
+     "country_long": "Korea",  "speed_mbps": 83.1,  "uptime_days": 7.2,
+     "log_policy": "2weeks", "operator": "volunteer"},
+]
+
+
+def check_tcp_reachable(host: str, port: int = 443, timeout: float = 3.0) -> tuple[bool, float]:
+    """Try a TCP connect. Returns (reachable, rtt_ms). rtt_ms is -1 on failure."""
+    t0 = time.time()
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, (time.time() - t0) * 1000
+    except Exception:
+        return False, -1
 
 
 def fetch_vpngate(force: bool = False) -> list[dict]:
@@ -638,6 +686,45 @@ class KeeneticClient:
 
     def running_config(self) -> str:
         return self.run('show running-config', timeout=20.0)
+
+    def get_components(self) -> set[str]:
+        """Parse `show version` to find installed firmware components.
+        Result is a set of component names like {'sstp', 'wireguard', ...}.
+
+        The 'components:' YAML-ish field spans multiple lines where each
+        continuation line is indented more than the `components:` key line.
+        We collect until indent drops back (next field) or EOF."""
+        out = self.run('show version', timeout=10.0)
+        lines = out.splitlines()
+        key_indent: Optional[int] = None
+        parts: list[str] = []
+        for ln in lines:
+            if key_indent is None:
+                m = re.match(r'^(\s*)components\s*:\s*(.*)$', ln)
+                if m:
+                    key_indent = len(m.group(1))
+                    if m.group(2).strip():
+                        parts.append(m.group(2))
+                continue
+            # continuation?
+            m2 = re.match(r'^(\s*)(\S.*)?$', ln)
+            if not m2:
+                break
+            indent = len(m2.group(1))
+            content = (m2.group(2) or '').strip()
+            if content and indent > key_indent:
+                parts.append(content)
+            elif content:
+                break  # next YAML field
+        raw = re.sub(r'\s+', '', ','.join(parts))
+        return {c for c in raw.split(',') if c}
+
+    def get_interface_status(self, name: str) -> dict:
+        """Return current status of an interface: type, link, connected."""
+        for iface in self.list_interfaces():
+            if iface.get('name') == name:
+                return iface
+        return {}
 
     def create_fqdn_group(self, name: str, entries: list[str],
                           description: str = '') -> list[str]:
@@ -1011,6 +1098,16 @@ class App(tk.Tk):
                   style='Status.TLabel').grid(row=1, column=5, columnspan=4,
                                               sticky='w', padx=(12, 0), pady=(4, 0))
 
+        # Warning banner — sits between the header and the notebook.
+        self.warn_frame = ttk.Frame(self, padding=(8, 4))
+        self.warn_frame.pack(fill='x', padx=8, pady=(0, 4))
+        self.warn_frame.pack_forget()  # hidden until there's something to show
+        self.warn_label = tk.Label(self.warn_frame, text='', bg='#fff3cd',
+                                    fg='#664d03', font=('Segoe UI', 9),
+                                    anchor='w', padx=10, pady=6, justify='left',
+                                    wraplength=1000)
+        self.warn_label.pack(fill='x')
+
     # ── Services tab ────────────────────────────────────────────────────────
     def _build_services_tab(self):
         f = self.tab_services
@@ -1363,7 +1460,60 @@ class App(tk.Tk):
     # ── VPN Gate tab ───────────────────────────────────────────────────────
     def _build_vpngate_tab(self):
         f = self.tab_vpngate
-        # Top toolbar
+
+        # Bootstrap section — always available, no external fetch needed.
+        boot = ttk.LabelFrame(f, text=' Bootstrap servers (built-in, no VPN needed to use) ',
+                                padding=6)
+        boot.pack(fill='x', padx=4, pady=(6, 4))
+        ttk.Label(boot,
+                  text='vpngate.net is often unreachable from restricted networks. '
+                       'These ~10 hand-picked servers are included in the app so you can '
+                       'bootstrap an SSTP tunnel from scratch. Click "Test reachability" to '
+                       'check which are reachable from your network right now.',
+                  foreground='#555', wraplength=900, justify='left').pack(anchor='w',
+                                                                           pady=(0, 4))
+
+        boot_top = ttk.Frame(boot)
+        boot_top.pack(fill='x')
+        ttk.Button(boot_top, text='Test reachability',
+                   command=self._bootstrap_test_all).pack(side='left')
+        self.bootstrap_status_var = tk.StringVar(value=f'{len(BOOTSTRAP_VPNGATE_SERVERS)} servers · not tested yet')
+        ttk.Label(boot_top, textvariable=self.bootstrap_status_var, foreground='#555',
+                  style='Status.TLabel').pack(side='left', padx=10)
+
+        # Bootstrap table
+        bt_frame = ttk.Frame(boot)
+        bt_frame.pack(fill='x', pady=(4, 0))
+        cols = ('reach', 'country', 'host', 'ip', 'mbps', 'uptime', 'op')
+        self.bootstrap_tree = ttk.Treeview(bt_frame, columns=cols, show='headings',
+                                             selectmode='browse', height=10)
+        headings = {'reach': 'Reach', 'country': 'Country', 'host': 'Host',
+                    'ip': 'IP', 'mbps': 'Mbps', 'uptime': 'Uptime d', 'op': 'Operator'}
+        widths = {'reach': 85, 'country': 80, 'host': 170, 'ip': 120,
+                  'mbps': 70, 'uptime': 80, 'op': 280}
+        for c in cols:
+            self.bootstrap_tree.heading(c, text=headings[c])
+            self.bootstrap_tree.column(c, width=widths[c],
+                                         anchor='e' if c in ('mbps', 'uptime') else 'w')
+        self.bootstrap_tree.tag_configure('reach_ok', background='#dff5df')
+        self.bootstrap_tree.tag_configure('reach_bad', background='#ffd7d7')
+        self.bootstrap_tree.pack(side='left', fill='x', expand=True)
+        self._bootstrap_populate()
+
+        boot_act = ttk.Frame(boot)
+        boot_act.pack(fill='x', pady=(6, 0))
+        ttk.Button(boot_act, text='▶ Create SSTP interface from selected bootstrap server',
+                   command=self._bootstrap_create_interface,
+                   style='Accent.TButton').pack(side='left')
+        ttk.Label(boot_act, text='  (creds: vpn / vpn — the fixed VPN Gate defaults)',
+                  foreground='#888', style='Status.TLabel').pack(side='left')
+
+        ttk.Separator(f, orient='horizontal').pack(fill='x', padx=4, pady=6)
+
+        # Top toolbar for live list
+        ttk.Label(f, text='Live list (needs vpngate.net reachable — '
+                          'route vpngate_net service through VPN first):',
+                  foreground='#555').pack(anchor='w', padx=6)
         top = ttk.Frame(f, padding=(0, 4))
         top.pack(fill='x', padx=4, pady=(4, 0))
         ttk.Button(top, text='⟳ Refresh list',
@@ -1447,6 +1597,126 @@ class App(tk.Tk):
             self._vpngate_repaint()
             age = CACHE.age('vpngate') or 0
             self.vpngate_status_var.set(f'{len(cached)} servers (cached, {int(age/60)} min old)')
+
+    # ── Bootstrap helpers ─────────────────────────────────────────────────
+    def _bootstrap_populate(self, results: Optional[dict] = None):
+        """Render the bootstrap table. results: {host: (reachable, rtt_ms)}."""
+        self.bootstrap_tree.delete(*self.bootstrap_tree.get_children())
+        for s in BOOTSTRAP_VPNGATE_SERVERS:
+            if results is None:
+                reach = '…'
+                tag: tuple = ()
+            else:
+                ok, rtt = results.get(s['host'], (False, -1))
+                if ok:
+                    reach = f'✓ {int(rtt)} ms'
+                    tag = ('reach_ok',)
+                else:
+                    reach = '✗ blocked'
+                    tag = ('reach_bad',)
+            self.bootstrap_tree.insert('', 'end', iid=f'boot::{s["host"]}',
+                values=(reach,
+                        f'{s["country"]} {s["country_long"]}',
+                        s['host'], s['ip'], s['speed_mbps'],
+                        s['uptime_days'], s.get('operator', '')),
+                tags=tag)
+
+    def _bootstrap_test_all(self):
+        self.bootstrap_status_var.set('Testing TCP reachability on port 443…')
+        self._bootstrap_populate(None)
+
+        def do():
+            results: dict[str, tuple[bool, float]] = {}
+            for s in BOOTSTRAP_VPNGATE_SERVERS:
+                # Prefer IP to avoid DNS issues; fall back to hostname.
+                target = s.get('ip') or s['host']
+                results[s['host']] = check_tcp_reachable(target, 443, timeout=3.0)
+            return results
+
+        def done(result, err):
+            if err is not None:
+                self.log(f'Reachability test failed: {err}', 'err')
+                return
+            self._bootstrap_populate(result)
+            ok_count = sum(1 for v in result.values() if v[0])
+            self.bootstrap_status_var.set(
+                f'{ok_count}/{len(result)} reachable from this PC')
+            self.log(f'Bootstrap reachability: {ok_count}/{len(result)} servers up.',
+                     'ok' if ok_count else 'warn')
+
+        self.worker.run(do, on_done=done)
+
+    def _bootstrap_create_interface(self):
+        if not self._ensure_connected():
+            return
+        comps = self.client.router_info.get('components') or set()
+        if comps and 'sstp' not in comps:
+            messagebox.showerror(
+                APP_NAME,
+                'SSTP client component is not installed on the router. '
+                'Install it via the web UI (Components page), reboot, then retry.')
+            return
+        sel = self.bootstrap_tree.selection()
+        if not sel:
+            messagebox.showinfo(APP_NAME,
+                'Select a bootstrap server in the table first.\n\n'
+                'Tip: click "Test reachability" to see which ones are reachable.')
+            return
+        host_id = sel[0].split('::', 1)[1]
+        server = next((s for s in BOOTSTRAP_VPNGATE_SERVERS if s['host'] == host_id), None)
+        if not server:
+            return
+        existing_names = [i['name'] for i in self.interfaces]
+        idx = self.client.find_free_sstp_index(existing_names)
+        new_name = f'SSTP{idx}'
+        # Use the IP directly — bootstrap hosts are chosen with stable IPs to
+        # avoid relying on the user's DNS resolving an external hostname.
+        peer = server.get('ip') or server['host']
+        desc = f'VPN Gate bootstrap {server["country"]} {server["host"]}'
+        if not messagebox.askyesno(
+                APP_NAME,
+                f'Create SSTP interface "{new_name}" using bootstrap server?\n\n'
+                f'Peer:     {peer}\n'
+                f'Country:  {server["country_long"]}\n'
+                f'Speed:    {server["speed_mbps"]} Mbps\n'
+                f'Uptime:   {server["uptime_days"]} days\n'
+                f'Creds:    vpn / vpn\n\n'
+                'The interface will connect immediately.'):
+            return
+        self.log(f'Creating {new_name} from bootstrap server {host_id} ({peer})…')
+
+        def do():
+            errs = self.client.create_sstp_interface(
+                new_name, peer=peer, user='vpn', password='vpn',
+                description=desc, auto_connect=True)
+            self.client.save_config()
+            ifaces = self.client.list_interfaces()
+            return new_name, ifaces, errs
+
+        def done(result, err):
+            if err is not None:
+                self.log(f'Create interface failed: {err}', 'err')
+                messagebox.showerror(APP_NAME, str(err))
+                return
+            new_name, ifaces, errs = result
+            self.interfaces = ifaces
+            names = [i['name'] for i in ifaces]
+            self.iface_combo.configure(values=names, state='readonly')
+            if new_name in names:
+                self.iface_var.set(new_name)
+            for e in errs:
+                self.log(f'  {new_name}: {e}', 'warn')
+            self.log(f'✓ Created {new_name}. Selected as current interface.', 'ok')
+            self._update_warnings()
+            messagebox.showinfo(
+                APP_NAME,
+                f'Interface {new_name} created.\n\n'
+                'Next steps:\n'
+                '1) Tick the "VPN Gate (vpngate.net)" service on Services tab and Apply — '
+                'this will make vpngate.net reachable through this new tunnel.\n'
+                '2) Then the Live list on this tab can be refreshed from the real API.')
+
+        self.worker.run(do, on_done=done)
 
     def _on_vpngate_refresh(self):
         self.vpngate_status_var.set('Fetching…')
@@ -1800,6 +2070,11 @@ class App(tk.Tk):
             c.login(user, password)
             ifaces = c.list_interfaces()
             cfg = c.running_config()
+            try:
+                components = c.get_components()
+            except Exception:
+                components = set()
+            c.router_info['components'] = components
             return c, ifaces, cfg
 
         def done(result, err):
@@ -1833,6 +2108,7 @@ class App(tk.Tk):
             self.log(f'Connected. Interface: {self.iface_var.get()}', 'ok')
             self._populate_services()    # to mark applied
             self._refresh_state_view()
+            self._update_warnings()
             # Persist
             self.ui_cfg['last_host'] = host
             self.ui_cfg['last_user'] = user
@@ -1853,7 +2129,47 @@ class App(tk.Tk):
         self._set_state(ConnState.DISCONNECTED)
         self._populate_services()
         self._refresh_state_view()
+        self.warn_frame.pack_forget()
         self.log('Disconnected.', 'info')
+
+    def _update_warnings(self):
+        """Build the warning banner based on router state: missing SSTP
+        component, VPN interface that is down, etc."""
+        warns: list[str] = []
+        if self.client:
+            comps = self.client.router_info.get('components') or set()
+            if comps and 'sstp' not in comps:
+                warns.append(
+                    '⚠  SSTP client component is NOT installed on the router. '
+                    'You will not be able to create/use SSTP interfaces until it is installed. '
+                    'Open the router web UI → System settings → Components → enable "SSTP client", apply and reboot.')
+            iface_name = self.iface_var.get().strip()
+            if iface_name:
+                st = next((i for i in self.interfaces if i.get('name') == iface_name), {})
+                connected = st.get('connected', '') == 'yes'
+                link_up = st.get('link', '') == 'up'
+                if not (connected and link_up):
+                    status_bits = []
+                    if st.get('link'):      status_bits.append(f'link={st["link"]}')
+                    if st.get('connected'): status_bits.append(f'connected={st["connected"]}')
+                    warns.append(
+                        f'⚠  Selected interface "{iface_name}" is DOWN '
+                        f'({", ".join(status_bits) or "no status"}). With kill switch '
+                        'enabled, traffic to protected services will be dropped until the '
+                        'interface comes back up.')
+        # For newcomers with no services applied and no VPN interfaces at all
+        if self.client and not any(i.get('type') in
+                                   ('SSTP', 'L2TP', 'OpenVPN', 'Wireguard', 'PPTP')
+                                   for i in self.interfaces):
+            warns.append(
+                'ℹ  No VPN-client interfaces found on the router. To get started with '
+                'zero-config routing, open the "VPN Gate" tab and use a bootstrap server.')
+        if warns:
+            self.warn_label.configure(text='\n\n'.join(warns))
+            self.warn_frame.pack(fill='x', padx=8, pady=(0, 4),
+                                  before=self._main_pane)
+        else:
+            self.warn_frame.pack_forget()
 
     def _handle_connect_error(self, err: Exception):
         cls = type(err).__name__

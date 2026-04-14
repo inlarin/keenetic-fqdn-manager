@@ -25,7 +25,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Callable, Optional
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '0.4.0'
+APP_VERSION = '0.5.0'
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
 DEFAULT_TELNET_PORT = 23
@@ -61,6 +61,198 @@ def cidr_to_mask(cidr: str) -> tuple[str, str]:
 
 def strip_ansi(s: str) -> str:
     return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', s)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Upstream fetchers — pull FQDN lists and IPv4 CIDRs from public sources
+# ─────────────────────────────────────────────────────────────────────────────
+
+_FETCH_HEADERS = {'User-Agent': f'{APP_NAME}/{APP_VERSION}'}
+
+
+def _http_get(url: str, timeout: float = 20.0) -> str:
+    req = urllib.request.Request(url, headers=_FETCH_HEADERS)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode('utf-8', errors='replace')
+
+
+def fetch_v2fly(url: str) -> list[str]:
+    """Parse v2fly domain-list-community format.
+    We accept `domain:X` and `full:X`; drop `keyword:`, `regexp:`, `include:`
+    and comment-only / empty lines."""
+    text = _http_get(url)
+    out: set[str] = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if '#' in line:
+            line = line.split('#', 1)[0].strip()
+        if not line:
+            continue
+        if ':' in line:
+            prefix, rest = line.split(':', 1)
+            prefix = prefix.lower().strip()
+            rest = rest.strip().split()[0] if rest.strip() else ''
+            if prefix in ('domain', 'full') and rest:
+                out.add(rest.lower())
+        else:
+            # plain domain per line
+            if ' ' not in line:
+                out.add(line.lower())
+    return sorted(out)
+
+
+def fetch_plain_text(url: str) -> list[str]:
+    """Generic: one domain per line; # for comments."""
+    text = _http_get(url)
+    out: set[str] = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if '#' in line:
+            line = line.split('#', 1)[0].strip()
+        if line and ' ' not in line and '/' not in line:
+            out.add(line.lower())
+    return sorted(out)
+
+
+def fetch_cloudflare_v4() -> list[str]:
+    text = _http_get('https://www.cloudflare.com/ips-v4')
+    return sorted({ln.strip() for ln in text.splitlines() if ln.strip() and '/' in ln})
+
+
+def fetch_github_meta() -> list[str]:
+    data = json.loads(_http_get('https://api.github.com/meta'))
+    ips: set[str] = set()
+    for key in ('web', 'api', 'git', 'packages', 'hooks'):
+        for entry in data.get(key, []):
+            if ':' not in entry and '/' in entry:  # IPv4 CIDR
+                ips.add(entry)
+    return sorted(ips)
+
+
+def fetch_fastly() -> list[str]:
+    data = json.loads(_http_get('https://api.fastly.com/public-ip-list'))
+    return sorted({a for a in data.get('addresses', []) if '/' in a})
+
+
+def fetch_aws_service(service_tag: str) -> list[str]:
+    data = json.loads(_http_get('https://ip-ranges.amazonaws.com/ip-ranges.json'))
+    return sorted({
+        p['ip_prefix'] for p in data.get('prefixes', [])
+        if p.get('service') == service_tag and 'ip_prefix' in p
+    })
+
+
+def fetch_google_ipranges(name: str = 'goog') -> list[str]:
+    """name is 'goog' (all Google) or 'cloud' (GCP)."""
+    data = json.loads(_http_get(f'https://www.gstatic.com/ipranges/{name}.json'))
+    return sorted({
+        p['ipv4Prefix'] for p in data.get('prefixes', []) if 'ipv4Prefix' in p
+    })
+
+
+def fetch_oracle_ranges(service: str = '') -> list[str]:
+    data = json.loads(_http_get('https://docs.oracle.com/iaas/tools/public_ip_ranges.json'))
+    out: set[str] = set()
+    for region in data.get('regions', []):
+        for cidr in region.get('cidrs', []):
+            if service and service not in cidr.get('tags', []):
+                continue
+            if '/' in cidr.get('cidr', ''):
+                out.add(cidr['cidr'])
+    return sorted(out)
+
+
+def fetch_asn_prefixes(asn: int) -> list[str]:
+    """RIPEstat: IPv4 prefixes announced by an ASN."""
+    url = f'https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS{asn}'
+    data = json.loads(_http_get(url, timeout=30.0))
+    out: set[str] = set()
+    for entry in data.get('data', {}).get('prefixes', []):
+        pfx = entry.get('prefix', '')
+        if ':' not in pfx and '/' in pfx:
+            out.add(pfx)
+    return sorted(out)
+
+
+def resolve_ipv4_provider(spec: str) -> tuple[list[str], str]:
+    """Dispatch `ipv4_providers` entries. Returns (cidrs, human_label)."""
+    spec = spec.strip()
+    if ':' in spec:
+        kind, arg = spec.split(':', 1)
+        kind = kind.lower()
+        if kind == 'aws':
+            return fetch_aws_service(arg.upper()), f'aws:{arg.upper()}'
+        if kind == 'google':
+            return fetch_google_ipranges(arg.lower()), f'google:{arg.lower()}'
+        if kind == 'oracle':
+            return fetch_oracle_ranges(arg.upper()), f'oracle:{arg.upper()}'
+        if kind == 'asn':
+            return fetch_asn_prefixes(int(arg)), f'AS{arg}'
+        raise ValueError(f'Unknown provider kind: {kind}')
+    key = spec.lower()
+    if key == 'cloudflare':
+        return fetch_cloudflare_v4(), 'cloudflare'
+    if key == 'github':
+        return fetch_github_meta(), 'github'
+    if key == 'fastly':
+        return fetch_fastly(), 'fastly'
+    raise ValueError(f'Unknown provider: {spec}')
+
+
+def refresh_service(svc: dict, merge: bool = True) -> tuple[dict, list[str], list[str]]:
+    """Pull upstream/ipv4_providers/asn data into the service.
+
+    Returns (updated_svc, info_lines, errors).
+    When merge=True, upstream data is union-merged with catalog lists.
+    When merge=False, upstream data replaces them."""
+    info: list[str] = []
+    errors: list[str] = []
+    new_fqdn: set[str] = set(svc.get('fqdn', [])) if merge else set()
+    new_ipv4: set[str] = set(svc.get('ipv4_cidr', [])) if merge else set()
+
+    for spec in svc.get('upstream', []) or []:
+        t = (spec.get('type') or '').lower()
+        url = spec.get('url', '')
+        try:
+            if t == 'v2fly':
+                pulled = fetch_v2fly(url)
+            elif t in ('text', 'plain', 'podkop'):
+                pulled = fetch_plain_text(url)
+            else:
+                errors.append(f'unknown upstream type: {t}')
+                continue
+            before = len(new_fqdn)
+            new_fqdn.update(pulled)
+            info.append(f'{t}: {url.rsplit("/", 1)[-1]} — {len(pulled)} items, +{len(new_fqdn) - before} new FQDN')
+        except Exception as e:
+            errors.append(f'{url}: {e}')
+
+    for spec in svc.get('ipv4_providers', []) or []:
+        try:
+            cidrs, label = resolve_ipv4_provider(spec)
+            before = len(new_ipv4)
+            new_ipv4.update(cidrs)
+            info.append(f'{label}: {len(cidrs)} CIDR, +{len(new_ipv4) - before} new IPv4')
+        except Exception as e:
+            errors.append(f'{spec}: {e}')
+
+    for asn in svc.get('asn', []) or []:
+        try:
+            cidrs = fetch_asn_prefixes(int(asn))
+            before = len(new_ipv4)
+            new_ipv4.update(cidrs)
+            info.append(f'AS{asn}: {len(cidrs)} prefixes, +{len(new_ipv4) - before} new IPv4')
+        except Exception as e:
+            errors.append(f'AS{asn}: {e}')
+
+    out_svc = dict(svc)
+    out_svc['fqdn'] = sorted(new_fqdn)
+    out_svc['ipv4_cidr'] = sorted(new_ipv4)
+    return out_svc, info, errors
 
 
 def load_ui_config() -> dict:
@@ -732,6 +924,20 @@ class App(tk.Tk):
         t.insert('end', f'{svc.get("category", "Other")} · id = {svc["id"]}\n', 'muted')
         if svc.get('description'):
             t.insert('end', f'\n{svc["description"]}\n')
+        sources = []
+        for u in svc.get('upstream', []) or []:
+            sources.append(f'{u.get("type", "?")}:{u.get("url", "").rsplit("/", 1)[-1]}')
+        for p in svc.get('ipv4_providers', []) or []:
+            sources.append(p)
+        for a in svc.get('asn', []) or []:
+            sources.append(f'AS{a}')
+        if sources:
+            t.insert('end', '\nUpstream sources: ', 'h2')
+            t.insert('end', ', '.join(sources) + '\n', 'mono')
+            btn = ttk.Button(t, text='⟳ Refresh this service from upstream',
+                              command=lambda s=svc: self._on_refresh_upstream_one(s))
+            t.window_create('end', window=btn)
+            t.insert('end', '\n')
         state, label = self._svc_state(svc)
         if state == 'applied':
             t.insert('end', '\nApplied on router: ', 'h2')
@@ -870,8 +1076,28 @@ class App(tk.Tk):
                   foreground='#555').pack(anchor='w')
         ttk.Label(header, text=stats, foreground='#555').pack(anchor='w', pady=(2, 0))
 
+        # Upstream refresh: how many services declare upstream/providers/asn
+        n_upstream = sum(1 for s in self.catalog.services
+                         if s.get('upstream') or s.get('ipv4_providers') or s.get('asn'))
+        refresh_box = ttk.LabelFrame(f, text=' Upstream refresh ', padding=8)
+        refresh_box.pack(fill='x', padx=8, pady=(10, 6))
+        ttk.Label(refresh_box,
+                  text=f'{n_upstream} of {len(self.catalog.services)} services declare an upstream '
+                       'source (v2fly, Cloudflare, AWS, RIPEstat, etc.)').pack(anchor='w')
+        ttk.Label(refresh_box,
+                  text='Pull fresh FQDN / IPv4 CIDR lists from upstream and merge into the '
+                       'in-memory catalog. Re-Apply after to push changes to the router.',
+                  foreground='#555', wraplength=700, justify='left').pack(anchor='w', pady=(2, 6))
+        row = ttk.Frame(refresh_box)
+        row.pack(anchor='w')
+        ttk.Button(row, text='⟳  Refresh all upstream',
+                   command=self._on_refresh_upstream_all,
+                   style='Accent.TButton').pack(side='left')
+        ttk.Button(row, text='Export current catalog to file…',
+                   command=self._on_export_catalog).pack(side='left', padx=(8, 0))
+
         url_box = ttk.LabelFrame(f, text=' Import from URL ', padding=8)
-        url_box.pack(fill='x', padx=8, pady=10)
+        url_box.pack(fill='x', padx=8, pady=6)
         self.url_var = tk.StringVar()
         ttk.Label(url_box, text='URL to services.json (schema_version=1):').pack(anchor='w')
         row = ttk.Frame(url_box)
@@ -1347,6 +1573,101 @@ class App(tk.Tk):
                      f'({len(self.catalog.services)} services).', 'ok')
         except Exception as e:
             messagebox.showerror(APP_NAME, f'Failed to load: {e}')
+
+    # ── Upstream refresh ──────────────────────────────────────────────────
+    def _on_refresh_upstream_all(self):
+        targets = [s for s in self.catalog.services
+                   if s.get('upstream') or s.get('ipv4_providers') or s.get('asn')]
+        if not targets:
+            messagebox.showinfo(APP_NAME, 'No services in the catalog declare an upstream.')
+            return
+        if not messagebox.askyesno(
+                APP_NAME,
+                f'Fetch upstream lists for {len(targets)} service(s)?\n\n'
+                'Domains / CIDRs from v2fly, Cloudflare, AWS, RIPEstat etc. will be '
+                'merged into the in-memory catalog.\n\nThis does NOT push to the router — '
+                'run Apply after to propagate.'):
+            return
+        self.log(f'Refreshing upstream for {len(targets)} service(s)…')
+
+        def do():
+            results = []
+            for svc in targets:
+                before_f = len(svc.get('fqdn', []))
+                before_i = len(svc.get('ipv4_cidr', []))
+                new_svc, info, errs = refresh_service(svc, merge=True)
+                after_f = len(new_svc.get('fqdn', []))
+                after_i = len(new_svc.get('ipv4_cidr', []))
+                results.append((svc['id'], new_svc, info, errs, before_f, after_f, before_i, after_i))
+            return results
+
+        def done(result, err):
+            if err is not None:
+                self.log(f'Refresh failed: {err}', 'err')
+                messagebox.showerror(APP_NAME, str(err))
+                return
+            # Apply results: replace service dict in catalog.data.services
+            updated = 0
+            for sid, new_svc, info_lines, errs, bf, af, bi, ai in result:
+                for idx, s in enumerate(self.catalog.data.get('services', [])):
+                    if s.get('id') == sid:
+                        self.catalog.data['services'][idx] = new_svc
+                        break
+                delta_f = af - bf
+                delta_i = ai - bi
+                if errs:
+                    for e in errs:
+                        self.log(f'  {sid}: {e}', 'warn')
+                if delta_f or delta_i:
+                    self.log(f'↻ {sid}: FQDN {bf}→{af} (+{delta_f}), IPv4 {bi}→{ai} (+{delta_i})', 'ok')
+                    updated += 1
+                else:
+                    self.log(f'= {sid}: no changes', 'info')
+            self._populate_services()
+            self._set_details_placeholder()
+            self.log(f'Upstream refresh done: {updated} service(s) updated.', 'ok')
+            messagebox.showinfo(APP_NAME, f'Refreshed {updated} service(s) out of {len(result)}.')
+
+        self.worker.run(do, on_done=done)
+
+    def _on_refresh_upstream_one(self, svc: dict):
+        self.log(f'Refreshing upstream for {svc["id"]}…')
+
+        def do():
+            return refresh_service(svc, merge=True)
+
+        def done(result, err):
+            if err is not None:
+                self.log(f'Refresh failed: {err}', 'err')
+                messagebox.showerror(APP_NAME, str(err))
+                return
+            new_svc, info_lines, errs = result
+            for idx, s in enumerate(self.catalog.data.get('services', [])):
+                if s.get('id') == svc['id']:
+                    self.catalog.data['services'][idx] = new_svc
+                    break
+            for ln in info_lines:
+                self.log(f'  {svc["id"]}: {ln}', 'info')
+            for e in errs:
+                self.log(f'  {svc["id"]}: {e}', 'warn')
+            self.log(f'↻ {svc["id"]}: FQDN→{len(new_svc["fqdn"])}, IPv4→{len(new_svc["ipv4_cidr"])}', 'ok')
+            self._populate_services()
+            self._show_service_details(new_svc)
+
+        self.worker.run(do, on_done=done)
+
+    def _on_export_catalog(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension='.json', filetypes=[('JSON', '*.json')],
+            initialfile='services.json')
+        if not path:
+            return
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(self.catalog.data, f, ensure_ascii=False, indent=2)
+            self.log(f'Catalog exported to {path}', 'ok')
+        except Exception as e:
+            messagebox.showerror(APP_NAME, f'Export failed: {e}')
 
     # ── Close ──────────────────────────────────────────────────────────────
     def _on_close(self):

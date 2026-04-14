@@ -25,7 +25,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Callable, Optional
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '0.5.0'
+APP_VERSION = '0.5.1'
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
 DEFAULT_TELNET_PORT = 23
@@ -692,16 +692,48 @@ class App(tk.Tk):
 
         log_frame = ttk.LabelFrame(main_pane, text=' Log ')
         main_pane.add(log_frame, weight=1)
+        # Log toolbar
+        log_top = ttk.Frame(log_frame)
+        log_top.pack(fill='x', padx=4, pady=(4, 0))
+        ttk.Button(log_top, text='Copy all',
+                   command=self._log_copy_all).pack(side='left')
+        ttk.Button(log_top, text='Copy selection',
+                   command=self._log_copy_selection).pack(side='left', padx=4)
+        ttk.Button(log_top, text='Clear',
+                   command=self._log_clear).pack(side='left', padx=4)
+        ttk.Label(log_top, text='(Ctrl+A select all · Ctrl+C copy · right-click for menu)',
+                  foreground='#888', style='Status.TLabel').pack(side='left', padx=12)
         self.log_box = scrolledtext.ScrolledText(
-            log_frame, height=6, state='disabled',
+            log_frame, height=6,
             font=self._mono_font, wrap='word', relief='flat', borderwidth=0)
         self.log_box.pack(fill='both', expand=True, padx=4, pady=4)
+        # Read-only but still selectable / copyable:
+        def _log_block_keys(e):
+            if e.state & 0x4:          # Ctrl held → let Ctrl+C/A/Insert through
+                return
+            if e.keysym in ('Left', 'Right', 'Up', 'Down', 'Home', 'End',
+                            'Prior', 'Next', 'Shift_L', 'Shift_R',
+                            'Control_L', 'Control_R', 'Tab'):
+                return
+            return 'break'
+        self.log_box.bind('<Key>', _log_block_keys)
+        self.log_box.bind('<Button-2>', lambda e: 'break')  # block middle-click paste
+        self.log_box.bind('<Control-a>', lambda e: self._log_select_all())
+        self.log_box.bind('<Control-A>', lambda e: self._log_select_all())
+        self.log_box.bind('<Button-3>', self._log_context_menu)
         # Color tags for log levels
         self.log_box.tag_configure('info',  foreground='#333')
         self.log_box.tag_configure('ok',    foreground='#1e7e1e')
         self.log_box.tag_configure('warn',  foreground='#a05c00')
         self.log_box.tag_configure('err',   foreground='#a51818')
         self.log_box.tag_configure('ts',    foreground='#888')
+        # Context menu
+        self._log_menu = tk.Menu(self, tearoff=0)
+        self._log_menu.add_command(label='Copy selection', command=self._log_copy_selection)
+        self._log_menu.add_command(label='Copy all',       command=self._log_copy_all)
+        self._log_menu.add_separator()
+        self._log_menu.add_command(label='Select all',     command=self._log_select_all)
+        self._log_menu.add_command(label='Clear',          command=self._log_clear)
 
     def _build_header(self):
         wrap = ttk.Frame(self, padding=(8, 8, 8, 4))
@@ -760,6 +792,14 @@ class App(tk.Tk):
         ttk.Button(top, text='Select applied', width=14,
                    command=self._select_applied).pack(side='left', padx=2)
 
+        ttk.Label(top, text='Show:').pack(side='left', padx=(12, 2))
+        self.svc_filter_var = tk.StringVar(value='All')
+        flt = ttk.Combobox(top, textvariable=self.svc_filter_var,
+                            values=('All', 'Applied', 'Drifted', 'Not applied', 'Ticked'),
+                            state='readonly', width=12)
+        flt.pack(side='left')
+        flt.bind('<<ComboboxSelected>>', lambda e: self._populate_services())
+
         self.svc_summary_var = tk.StringVar(value='')
         ttk.Label(top, textvariable=self.svc_summary_var, foreground='#555',
                   style='Status.TLabel').pack(side='left', padx=12)
@@ -794,8 +834,8 @@ class App(tk.Tk):
         self.svc_tree.column('applied', width=110, stretch=False, anchor='center')
 
         self.svc_tree.tag_configure('category',  font=self._tree_font_bold, background='#eef2f7')
-        self.svc_tree.tag_configure('applied',   foreground='#1e7e1e', background='#eef9ee')
-        self.svc_tree.tag_configure('drifted',   foreground='#a05c00', background='#fff7e6')
+        self.svc_tree.tag_configure('applied',   foreground='#0a6b0a', background='#dff5df')
+        self.svc_tree.tag_configure('drifted',   foreground='#8a4500', background='#ffeccc')
         self.svc_tree.tag_configure('stripe',    background='#fafafa')
 
         self.svc_tree.pack(side='left', fill='both', expand=True)
@@ -825,43 +865,73 @@ class App(tk.Tk):
 
     def _populate_services(self):
         self.svc_tree.delete(*self.svc_tree.get_children())
+        flt = getattr(self, 'svc_filter_var', None)
+        filter_mode = flt.get() if flt else 'All'
+
+        # Global counters (not filtered) for the summary line
+        all_applied = all_drifted = 0
+        for s in self.catalog.services:
+            st, _ = self._svc_state(s)
+            if st == 'applied': all_applied += 1
+            elif st == 'drifted': all_drifted += 1
+
         by_cat: dict[str, list[dict]] = {}
         for svc in self.catalog.services:
             by_cat.setdefault(svc.get('category', 'Other'), []).append(svc)
-        applied_count = drift_count = 0
+
+        shown = 0
         stripe = False
         for cat in sorted(by_cat.keys()):
+            # Decide which services in this category to show
+            visible = []
+            for svc in by_cat[cat]:
+                state, _ = self._svc_state(svc)
+                checked = self.svc_checked.get(svc['id'], False)
+                if filter_mode == 'Applied' and state != 'applied':
+                    continue
+                if filter_mode == 'Drifted' and state != 'drifted':
+                    continue
+                if filter_mode == 'Not applied' and state in ('applied', 'drifted'):
+                    continue
+                if filter_mode == 'Ticked' and not checked:
+                    continue
+                visible.append((svc, state, checked))
+            if not visible:
+                continue
+
             icon = CATEGORY_ICON.get(cat, '📦')
             cat_id = f'cat::{cat}'
             self.svc_tree.insert('', 'end', iid=cat_id,
-                                  text=f'  {icon}  {cat}',
+                                  text=f'  {icon}  {cat}  ({len(visible)})',
                                   values=('', '', '', ''),
                                   tags=('category',),
                                   open=True)
-            for svc in by_cat[cat]:
-                sid = svc['id']
-                checked = self.svc_checked.get(sid, False)
-                state, label = self._svc_state(svc)
+            for svc, state, checked in visible:
                 tags: tuple = ('stripe',) if stripe else ()
                 if state == 'applied':
                     tags = tags + ('applied',)
-                    applied_count += 1
                 elif state == 'drifted':
                     tags = tags + ('drifted',)
-                    drift_count += 1
-                self.svc_tree.insert(cat_id, 'end', iid=f'svc::{sid}',
-                                      text=f'      {svc["name"]}',
+                status_icon = {'applied': '✓ ', 'drifted': '⚠ ', '': '◯ '}[state]
+                _, label = self._svc_state(svc)
+                self.svc_tree.insert(cat_id, 'end', iid=f'svc::{svc["id"]}',
+                                      text=f'    {status_icon} {svc["name"]}',
                                       values=('☑' if checked else '☐',
                                               len(svc.get('fqdn', [])),
                                               len(svc.get('ipv4_cidr', [])),
                                               label),
                                       tags=tags)
                 stripe = not stripe
+                shown += 1
+
         total = len(self.catalog.services)
-        parts = [f'{applied_count}/{total} applied']
-        if drift_count:
-            parts.append(f'{drift_count} drifted')
-        self.svc_summary_var.set(' · '.join(parts))
+        not_applied = total - all_applied - all_drifted
+        parts = [f'✓ {all_applied} applied', f'⚠ {all_drifted} drifted',
+                 f'◯ {not_applied} not applied',
+                 f'total {total}']
+        if filter_mode != 'All':
+            parts.append(f'showing {shown}')
+        self.svc_summary_var.set('  ·  '.join(parts))
 
     def _svc_state(self, svc: dict) -> tuple[str, str]:
         """Return (state, label) where state is 'applied'|'drifted'|''."""
@@ -1167,11 +1237,35 @@ class App(tk.Tk):
     # ── Log ────────────────────────────────────────────────────────────────
     def log(self, msg: str, level: str = 'info'):
         ts = time.strftime('%H:%M:%S')
-        self.log_box.configure(state='normal')
         self.log_box.insert('end', f'[{ts}] ', 'ts')
         self.log_box.insert('end', f'{msg}\n', level)
         self.log_box.see('end')
-        self.log_box.configure(state='disabled')
+
+    def _log_select_all(self):
+        self.log_box.tag_add('sel', '1.0', 'end-1c')
+        return 'break'
+
+    def _log_copy_selection(self):
+        try:
+            text = self.log_box.selection_get()
+        except tk.TclError:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
+    def _log_copy_all(self):
+        text = self.log_box.get('1.0', 'end-1c')
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
+    def _log_clear(self):
+        self.log_box.delete('1.0', 'end')
+
+    def _log_context_menu(self, event):
+        try:
+            self._log_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._log_menu.grab_release()
 
     # ── Queue drain ────────────────────────────────────────────────────────
     def _drain_queue(self):

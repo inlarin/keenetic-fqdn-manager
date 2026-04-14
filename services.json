@@ -337,8 +337,7 @@
       "category": "Dev",
       "description": "npm packages, Node.js.",
       "fqdn": ["npmjs.com", "www.npmjs.com", "registry.npmjs.org", "nodejs.org"],
-      "ipv4_cidr": [],
-      "upstream": [{"type": "v2fly", "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/npm"}]
+      "ipv4_cidr": []
     },
     {
       "id": "dockerhub",

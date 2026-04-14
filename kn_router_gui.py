@@ -151,26 +151,36 @@ class KeeneticClient:
         return bytes(out)
 
     def _read_until_any(self, patterns: list[str], timeout: float = 8.0) -> tuple[str, int]:
-        """Wait for any of the regexes. Returns (text_so_far, matched_index or -1)."""
+        """Wait for any of the regexes (against ANSI-stripped text).
+        Returns (text_so_far, matched_index or -1).
+        The Keenetic CLI emits ANSI erase sequences (\\x1b[K) right after the
+        prompt, so we must strip ANSI before regex matching or '$' anchors
+        never match."""
         assert self.sock is not None
         self.sock.settimeout(0.3)
-        clean = b''
+        buf = b''
         end = time.time() + timeout
-        compiled = [re.compile(p.encode()) for p in patterns]
+        compiled = [re.compile(p) for p in patterns]
+        def _check() -> tuple[str, int]:
+            txt = strip_ansi(buf.decode('utf-8', 'replace'))
+            for i, rx in enumerate(compiled):
+                if rx.search(txt):
+                    return txt, i
+            return txt, -1
         while time.time() < end:
             try:
                 chunk = self.sock.recv(4096)
                 if not chunk:
                     break
-                clean += self._negotiate(chunk)
-                for i, rx in enumerate(compiled):
-                    if rx.search(clean):
-                        return strip_ansi(clean.decode('utf-8', 'replace')), i
+                buf += self._negotiate(chunk)
+                txt, idx = _check()
+                if idx >= 0:
+                    return txt, idx
             except socket.timeout:
-                for i, rx in enumerate(compiled):
-                    if rx.search(clean):
-                        return strip_ansi(clean.decode('utf-8', 'replace')), i
-        return strip_ansi(clean.decode('utf-8', 'replace')), -1
+                txt, idx = _check()
+                if idx >= 0:
+                    return txt, idx
+        return strip_ansi(buf.decode('utf-8', 'replace')), -1
 
     def _read_until(self, pattern: str, timeout: float = 8.0) -> str:
         text, _ = self._read_until_any([pattern], timeout)
@@ -186,7 +196,7 @@ class KeeneticClient:
         self.sock.settimeout(timeout)
         try:
             self.sock.connect((self.host, self.port))
-            _, idx = self._read_until_any([r'(?i)login\s*:'], timeout)
+            banner1, idx = self._read_until_any([r'(?i)login\s*:'], timeout)
             if idx < 0:
                 raise ConnectionError('Router did not send login prompt')
             self._send(user)
@@ -202,13 +212,13 @@ class KeeneticClient:
             ], timeout)
             if idx == 0:
                 self.connected = True
-                # Try to extract banner info (version, model) for status display
-                m = re.search(r'NDMS version\s+(\S+)', out)
+                combined = (banner1 or '') + (out or '')
+                m = re.search(r'NDMS version\s+(\S+)', combined)
                 if m:
                     self.router_info['version'] = m.group(1)
-                m = re.search(r'copyright.*\d{4}\s+(.+?)\.', out)
+                m = re.search(r'copyright.*?\d{4}\s+(.+?)\.', combined)
                 if m:
-                    self.router_info['vendor'] = m.group(1)
+                    self.router_info['vendor'] = m.group(1).strip()
             elif idx < 0:
                 raise ConnectionError('Timeout waiting for login result')
             else:

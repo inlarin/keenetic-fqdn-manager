@@ -25,7 +25,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Callable, Optional
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '0.2.1'
+APP_VERSION = '0.3.0'
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
 DEFAULT_TELNET_PORT = 23
@@ -560,6 +560,12 @@ class App(tk.Tk):
                    command=lambda: self._toggle_all_services(True)).pack(side='left', padx=(0, 4))
         ttk.Button(top, text='Clear',      width=8,
                    command=lambda: self._toggle_all_services(False)).pack(side='left', padx=2)
+        ttk.Button(top, text='Select applied', width=14,
+                   command=self._select_applied).pack(side='left', padx=2)
+
+        self.svc_summary_var = tk.StringVar(value='')
+        ttk.Label(top, textvariable=self.svc_summary_var, foreground='#555',
+                  style='Status.TLabel').pack(side='left', padx=12)
 
         self.btn_apply = ttk.Button(top, text='▶  Apply  (Ctrl+Enter)',
                                      command=self._on_apply_services,
@@ -590,9 +596,10 @@ class App(tk.Tk):
         self.svc_tree.column('ipv4',    width=55,  stretch=False, anchor='e')
         self.svc_tree.column('applied', width=110, stretch=False, anchor='center')
 
-        self.svc_tree.tag_configure('category', font=self._tree_font_bold, background='#eef2f7')
-        self.svc_tree.tag_configure('applied',  foreground='#1e7e1e')
-        self.svc_tree.tag_configure('stripe',   background='#fafafa')
+        self.svc_tree.tag_configure('category',  font=self._tree_font_bold, background='#eef2f7')
+        self.svc_tree.tag_configure('applied',   foreground='#1e7e1e', background='#eef9ee')
+        self.svc_tree.tag_configure('drifted',   foreground='#a05c00', background='#fff7e6')
+        self.svc_tree.tag_configure('stripe',    background='#fafafa')
 
         self.svc_tree.pack(side='left', fill='both', expand=True)
         yscroll = ttk.Scrollbar(tree_frame, orient='vertical', command=self.svc_tree.yview)
@@ -624,6 +631,7 @@ class App(tk.Tk):
         by_cat: dict[str, list[dict]] = {}
         for svc in self.catalog.services:
             by_cat.setdefault(svc.get('category', 'Other'), []).append(svc)
+        applied_count = drift_count = 0
         stripe = False
         for cat in sorted(by_cat.keys()):
             icon = CATEGORY_ICON.get(cat, '📦')
@@ -636,33 +644,52 @@ class App(tk.Tk):
             for svc in by_cat[cat]:
                 sid = svc['id']
                 checked = self.svc_checked.get(sid, False)
-                applied_info = self._svc_applied_info(sid)
+                state, label = self._svc_state(svc)
                 tags: tuple = ('stripe',) if stripe else ()
-                if applied_info:
+                if state == 'applied':
                     tags = tags + ('applied',)
+                    applied_count += 1
+                elif state == 'drifted':
+                    tags = tags + ('drifted',)
+                    drift_count += 1
                 self.svc_tree.insert(cat_id, 'end', iid=f'svc::{sid}',
                                       text=f'      {svc["name"]}',
                                       values=('☑' if checked else '☐',
                                               len(svc.get('fqdn', [])),
                                               len(svc.get('ipv4_cidr', [])),
-                                              applied_info or ''),
+                                              label),
                                       tags=tags)
                 stripe = not stripe
+        total = len(self.catalog.services)
+        parts = [f'{applied_count}/{total} applied']
+        if drift_count:
+            parts.append(f'{drift_count} drifted')
+        self.svc_summary_var.set(' · '.join(parts))
 
-    def _svc_applied_info(self, sid: str) -> str:
-        """Return short label 'iface + flags' if this service's group is on router."""
+    def _svc_state(self, svc: dict) -> tuple[str, str]:
+        """Return (state, label) where state is 'applied'|'drifted'|''."""
+        sid = svc['id']
         if sid not in self.state.get('groups', {}):
-            return ''
+            return '', ''
         route = next((r for r in self.state.get('dns_routes', []) if r['group'] == sid), None)
         if not route:
-            return '● orphaned'
+            return 'drifted', '● orphaned group'
+        cat_fqdn = set(svc.get('fqdn', []))
+        rtr_fqdn = set(self.state['groups'].get(sid, []))
         flags = []
         if route.get('reject'):
             flags.append('kill')
-        label = f'● {route["interface"]}'
-        if flags:
-            label += f' ({",".join(flags)})'
-        return label
+        label_suffix = f' ({",".join(flags)})' if flags else ''
+        if cat_fqdn == rtr_fqdn:
+            return 'applied', f'● {route["interface"]}{label_suffix}'
+        return 'drifted', f'⚠ {route["interface"]}{label_suffix} · drift'
+
+    def _select_applied(self):
+        """Tick all services that are currently present on the router."""
+        for svc in self.catalog.services:
+            state, _ = self._svc_state(svc)
+            self.svc_checked[svc['id']] = state in ('applied', 'drifted')
+        self._populate_services()
 
     def _on_svc_click(self, event):
         region = self.svc_tree.identify('region', event.x, event.y)
@@ -699,20 +726,20 @@ class App(tk.Tk):
         t.insert('end', f'{svc.get("category", "Other")} · id = {svc["id"]}\n', 'muted')
         if svc.get('description'):
             t.insert('end', f'\n{svc["description"]}\n')
-        applied = self._svc_applied_info(svc['id'])
-        if applied:
+        state, label = self._svc_state(svc)
+        if state == 'applied':
             t.insert('end', '\nApplied on router: ', 'h2')
-            t.insert('end', applied + '\n', 'ok')
+            t.insert('end', label + '\n', 'ok')
+        elif state == 'drifted':
+            t.insert('end', '\nApplied with drift: ', 'h2')
+            t.insert('end', label + '\n', 'warn')
             grp = self.state['groups'].get(svc['id'], [])
-            if grp and set(grp) != set(svc.get('fqdn', [])):
-                extra = set(grp) - set(svc.get('fqdn', []))
-                missing = set(svc.get('fqdn', [])) - set(grp)
-                if extra or missing:
-                    t.insert('end', '\nDrift vs catalog:\n', 'warn')
-                    if missing:
-                        t.insert('end', f'  missing on router: {", ".join(sorted(missing))}\n', 'mono')
-                    if extra:
-                        t.insert('end', f'  extra on router:   {", ".join(sorted(extra))}\n', 'mono')
+            extra = set(grp) - set(svc.get('fqdn', []))
+            missing = set(svc.get('fqdn', [])) - set(grp)
+            if missing:
+                t.insert('end', f'  missing on router: {", ".join(sorted(missing))}\n', 'mono')
+            if extra:
+                t.insert('end', f'  extra on router:   {", ".join(sorted(extra))}\n', 'mono')
         else:
             t.insert('end', '\nNot applied on router.\n', 'muted')
         t.insert('end', f'\nFQDN ({len(svc.get("fqdn", []))}):\n', 'h2')
@@ -1031,6 +1058,50 @@ class App(tk.Tk):
         return True
 
     # ── Apply ─────────────────────────────────────────────────────────────
+    def _compute_apply_plan(self, selected: list[dict], iface: str, exclusive: bool) -> dict:
+        """Classify each service as create / update / skip."""
+        plan: dict = {'create': [], 'update': [], 'skip': []}
+        for svc in selected:
+            sid = svc['id']
+            cat_fqdn = set(svc.get('fqdn', []))
+            cat_ipv4 = {cidr_to_mask(c) for c in svc.get('ipv4_cidr', [])}
+
+            rtr_fqdn = set(self.state['groups'].get(sid, []))
+            route = next((r for r in self.state['dns_routes'] if r['group'] == sid), None)
+            # Collect rtr IP routes that match any of this service's subnets (any iface)
+            rtr_ips = {(r['network'], r['mask']): r for r in self.state['ip_routes']
+                       if (r['network'], r['mask']) in cat_ipv4}
+
+            if not rtr_fqdn and not route and not rtr_ips:
+                plan['create'].append({'svc': svc, 'reasons': ['new']})
+                continue
+
+            reasons = []
+            if rtr_fqdn != cat_fqdn:
+                diff_add = len(cat_fqdn - rtr_fqdn)
+                diff_rm  = len(rtr_fqdn - cat_fqdn)
+                if diff_add or diff_rm:
+                    reasons.append(f'domains ({diff_add}+ / {diff_rm}-)')
+            if route is None and cat_fqdn:
+                reasons.append('dns-proxy route missing')
+            elif route is not None:
+                if route['interface'] != iface:
+                    reasons.append(f'iface {route["interface"]}→{iface}')
+                if bool(route.get('reject')) != exclusive:
+                    reasons.append(f'kill-switch {route.get("reject", False)}→{exclusive}')
+            for (net, mask) in cat_ipv4:
+                existing = rtr_ips.get((net, mask))
+                if existing is None:
+                    reasons.append(f'+{net}/{mask}')
+                elif existing['interface'] != iface or bool(existing.get('reject')) != exclusive:
+                    reasons.append(f'{net}/{mask} flags/iface')
+
+            if reasons:
+                plan['update'].append({'svc': svc, 'reasons': reasons})
+            else:
+                plan['skip'].append({'svc': svc, 'reasons': ['identical']})
+        return plan
+
     def _on_apply_services(self):
         if not self._ensure_connected():
             return
@@ -1043,19 +1114,46 @@ class App(tk.Tk):
             messagebox.showinfo(APP_NAME, 'Tick at least one service.')
             return
         exclusive = self.exclusive_var.get()
-        kind = 'exclusive (kill switch)' if exclusive else 'non-exclusive'
-        if not messagebox.askyesno(
-                APP_NAME,
-                f'Apply {len(selected)} service(s) via {iface} as {kind}?\n\n'
-                'This will recreate the object-groups and dns-proxy routes, '
-                'add IP routes if defined, and save configuration.'):
+        plan = self._compute_apply_plan(selected, iface, exclusive)
+
+        # Build confirmation text
+        def fmt(items: list, verb: str) -> str:
+            if not items:
+                return ''
+            lines = [f'  • {verb}:']
+            for it in items[:8]:
+                rsn = ', '.join(it['reasons'][:3])
+                lines.append(f'      {it["svc"]["name"]} ({rsn})')
+            if len(items) > 8:
+                lines.append(f'      … and {len(items) - 8} more')
+            return '\n'.join(lines) + '\n'
+
+        if not plan['create'] and not plan['update']:
+            messagebox.showinfo(APP_NAME,
+                f'All {len(plan["skip"])} selected service(s) are already up-to-date. '
+                'Nothing to apply.')
             return
+
+        summary = [
+            f'Apply plan via {iface}',
+            f'Kill switch: {"ON" if exclusive else "off"}',
+            '',
+            fmt(plan['create'], f'CREATE  ({len(plan["create"])})'),
+            fmt(plan['update'], f'UPDATE  ({len(plan["update"])})'),
+            fmt(plan['skip'],   f'SKIP    ({len(plan["skip"])} already up-to-date)'),
+            'Proceed?'
+        ]
+        if not messagebox.askyesno(APP_NAME, '\n'.join(x for x in summary if x)):
+            return
+
+        to_do = plan['create'] + plan['update']
 
         def do_apply():
             c = self.client
             assert c is not None
-            total_doms = total_ips = 0
-            for svc in selected:
+            total_doms = total_ips = touched = 0
+            for entry in to_do:
+                svc = entry['svc']
                 group = svc['id']
                 if not GROUP_NAME_RE.match(group):
                     self.ui_queue.put(('log', ('warn', f'SKIP {svc["name"]}: invalid group id "{group}"')))
@@ -1069,28 +1167,45 @@ class App(tk.Tk):
                 self.ui_queue.put(('log', ('ok',
                     f'✓ {svc["name"]}  →  {iface}{" [kill switch]" if exclusive else ""}  '
                     f'({len(svc.get("fqdn", []))} FQDN)')))
+
                 for cidr in svc.get('ipv4_cidr', []):
                     net, mask = cidr_to_mask(cidr)
+                    # If there's already a route with same net/mask on a DIFFERENT
+                    # interface, remove it first — avoids duplicates across ifaces.
+                    for ex in list(self.state['ip_routes']):
+                        if (ex['network'] == net and ex['mask'] == mask
+                                and ex['interface'] != iface):
+                            c.delete_ip_route(ex['network'], ex['mask'], ex['interface'])
+                            self.ui_queue.put(('log', ('warn',
+                                f'  - removed stale {net}/{mask} via {ex["interface"]}')))
                     out = c.add_ip_route(net, mask, iface, auto=True, reject=exclusive)
                     if 'dded' in out or 'enewed' in out or 'xists' in out.lower():
                         total_ips += 1
                     else:
                         self.ui_queue.put(('log', ('warn',
                             f'  ip route {cidr}: {out.strip().splitlines()[-1] if out.strip() else "no reply"}')))
+                touched += 1
+
+            for entry in plan['skip']:
+                self.ui_queue.put(('log', ('info',
+                    f'= {entry["svc"]["name"]} already up-to-date, skipped')))
+
             c.save_config()
             cfg = c.running_config()
-            return total_doms, total_ips, cfg
+            return touched, total_doms, total_ips, cfg
 
         def done(result, err):
             if err is not None:
                 self.log(f'Apply failed: {err}', 'err')
                 messagebox.showerror(APP_NAME, str(err))
                 return
-            total_doms, total_ips, cfg = result
+            touched, total_doms, total_ips, cfg = result
             self.state = parse_running_config(cfg)
             self._refresh_state_view()
             self._populate_services()
-            self.log(f'Applied: {total_doms} FQDN, {total_ips} IPv4 routes. Config saved.', 'ok')
+            self.log(
+                f'Applied {touched} service(s): {total_doms} FQDN, '
+                f'{total_ips} IPv4 routes. Config saved.', 'ok')
 
         self.worker.run(do_apply, on_done=done)
 

@@ -25,7 +25,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Callable, Optional
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '0.7.0'
+APP_VERSION = '0.8.0'
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
 DEFAULT_TELNET_PORT = 23
@@ -309,42 +309,52 @@ def fetch_asn_prefixes(asn: int, force: bool = False) -> list[str]:
 
 VPNGATE_URL = 'http://www.vpngate.net/api/iphone/'
 
-# Offline bootstrap: ~10 servers picked at release time by uptime×speed/ping
-# from the live CSV. Primary purpose: let a user with NO existing VPN route
-# spin up an initial SSTP tunnel so they can *then* reach vpngate.net and
-# refresh the live list. JP entries are operated by the University of Tsukuba
-# team itself — the most stable cohort. Others are long-uptime volunteers.
+# Offline bootstrap: 40 servers picked at release time from the live CSV,
+# weighted by uptime * sqrt(speed) / ping. Diversified to at most 2 per /24
+# subnet so one DPI-blocked network doesn't kill the whole list. Purpose:
+# let a user with NO existing VPN route spin up an initial SSTP tunnel to
+# reach vpngate.net and refresh the full live list.
 BOOTSTRAP_VPNGATE_SERVERS: list[dict] = [
-    {"host": "public-vpn-255", "ip": "219.100.37.224", "country": "JP",
-     "country_long": "Japan", "speed_mbps": 472.9, "uptime_days": 65.4,
-     "log_policy": "2weeks", "operator": "Daiyuu Nobori — Academic Use Only"},
-    {"host": "public-vpn-58",  "ip": "219.100.37.49",  "country": "JP",
-     "country_long": "Japan", "speed_mbps": 1356.3, "uptime_days": 65.4,
-     "log_policy": "2weeks", "operator": "Daiyuu Nobori — Academic Use Only"},
-    {"host": "public-vpn-225", "ip": "219.100.37.219", "country": "JP",
-     "country_long": "Japan", "speed_mbps": 459.8, "uptime_days": 65.4,
-     "log_policy": "2weeks", "operator": "Daiyuu Nobori — Academic Use Only"},
-    {"host": "public-vpn-138", "ip": "219.100.37.117", "country": "JP",
-     "country_long": "Japan", "speed_mbps": 451.8, "uptime_days": 65.4,
-     "log_policy": "2weeks", "operator": "Daiyuu Nobori — Academic Use Only"},
-    {"host": "public-vpn-208", "ip": "219.100.37.166", "country": "JP",
-     "country_long": "Japan", "speed_mbps": 562.3, "uptime_days": 65.4,
-     "log_policy": "2weeks", "operator": "Daiyuu Nobori — Academic Use Only"},
-    {"host": "vpn555964923",   "ip": "115.91.77.92",   "country": "KR",
-     "country_long": "Korea",  "speed_mbps": 788.7, "uptime_days": 31.3,
-     "log_policy": "2weeks", "operator": "volunteer"},
-    {"host": "vpn402044879",   "ip": "211.185.142.92", "country": "KR",
-     "country_long": "Korea",  "speed_mbps": 233.9, "uptime_days": 42.5,
-     "log_policy": "2weeks", "operator": "volunteer"},
-    {"host": "vpn243876497",   "ip": "14.35.204.212",  "country": "KR",
-     "country_long": "Korea",  "speed_mbps": 777.6, "uptime_days": 13.3,
-     "log_policy": "2weeks", "operator": "volunteer"},
-    {"host": "vpn801552750",   "ip": "113.22.172.28",  "country": "VN",
-     "country_long": "Vietnam","speed_mbps": 532.8, "uptime_days": 6.2,
-     "log_policy": "2weeks", "operator": "volunteer"},
-    {"host": "vpn855551265",   "ip": "122.36.8.16",    "country": "KR",
-     "country_long": "Korea",  "speed_mbps": 83.1,  "uptime_days": 7.2,
-     "log_policy": "2weeks", "operator": "volunteer"},
+    {"host": "public-vpn-58", "ip": "219.100.37.49", "country": "JP", "country_long": "Japan", "speed_mbps": 1356.3, "uptime_days": 65.4, "log_policy": "2weeks", "operator": "Daiyuu Nobori_ Japan. Academic Use Only."},
+    {"host": "public-vpn-187", "ip": "219.100.37.179", "country": "JP", "country_long": "Japan", "speed_mbps": 741.2, "uptime_days": 65.4, "log_policy": "2weeks", "operator": "Daiyuu Nobori_ Japan. Academic Use Only."},
+    {"host": "vpn547433109", "ip": "60.94.156.193", "country": "JP", "country_long": "Japan", "speed_mbps": 112.4, "uptime_days": 89.5, "log_policy": "2weeks", "operator": "DESKTOP-0AHT9E7's owner"},
+    {"host": "vpn402044879", "ip": "211.185.142.92", "country": "KR", "country_long": "Korea Republic of", "speed_mbps": 233.9, "uptime_days": 42.5, "log_policy": "2weeks", "operator": "LAPTOP-5PPSLTA4's owner"},
+    {"host": "vpn174859392", "ip": "153.182.10.87", "country": "JP", "country_long": "Japan", "speed_mbps": 31.5, "uptime_days": 70.3, "log_policy": "2weeks", "operator": "DESKTOP-O54US4T's owner"},
+    {"host": "vpn555964923", "ip": "115.91.77.92", "country": "KR", "country_long": "Korea Republic of", "speed_mbps": 788.7, "uptime_days": 31.3, "log_policy": "2weeks", "operator": "DESKTOP-8P3DAB8's owner"},
+    {"host": "vpn267555532", "ip": "133.149.208.5", "country": "JP", "country_long": "Japan", "speed_mbps": 200.9, "uptime_days": 30.4, "log_policy": "2weeks", "operator": "Unknown346's owner"},
+    {"host": "vpn483922824", "ip": "125.51.134.78", "country": "JP", "country_long": "Japan", "speed_mbps": 951.4, "uptime_days": 15.4, "log_policy": "2weeks", "operator": "Necmon's owner"},
+    {"host": "vpn243876497", "ip": "14.35.204.212", "country": "KR", "country_long": "Korea Republic of", "speed_mbps": 777.6, "uptime_days": 13.3, "log_policy": "2weeks", "operator": "DESKTOP-TLA53CI's owner"},
+    {"host": "n26", "ip": "103.152.178.62", "country": "JP", "country_long": "Japan", "speed_mbps": 31.0, "uptime_days": 31.1, "log_policy": "2weeks", "operator": "DNCServers"},
+    {"host": "vpn257766783", "ip": "133.155.185.191", "country": "JP", "country_long": "Japan", "speed_mbps": 37.0, "uptime_days": 25.4, "log_policy": "2weeks", "operator": "WIN-MMRJCODCAVO's owner"},
+    {"host": "vpn734393325", "ip": "220.125.33.97", "country": "KR", "country_long": "Korea Republic of", "speed_mbps": 95.8, "uptime_days": 16.6, "log_policy": "2weeks", "operator": "DESKTOP-LPP12CE's owner"},
+    {"host": "vpn699442602", "ip": "118.240.66.7", "country": "JP", "country_long": "Japan", "speed_mbps": 838.8, "uptime_days": 8.3, "log_policy": "2weeks", "operator": "DESKTOP-N3018PM's owner"},
+    {"host": "vpn172194090", "ip": "126.88.128.168", "country": "JP", "country_long": "Japan", "speed_mbps": 695.4, "uptime_days": 7.2, "log_policy": "2weeks", "operator": "DESKTOP-3OQEUC5's owner"},
+    {"host": "2i6", "ip": "1.66.33.164", "country": "JP", "country_long": "Japan", "speed_mbps": 101.4, "uptime_days": 12.4, "log_policy": "2weeks", "operator": "DNC"},
+    {"host": "vpn892785171", "ip": "110.67.13.220", "country": "JP", "country_long": "Japan", "speed_mbps": 178.6, "uptime_days": 10.2, "log_policy": "2weeks", "operator": "mariko's owner"},
+    {"host": "vpn801552750", "ip": "113.22.172.28", "country": "VN", "country_long": "Viet Nam", "speed_mbps": 532.8, "uptime_days": 6.2, "log_policy": "2weeks", "operator": "DESKTOP-P0F2MAS's owner"},
+    {"host": "vpn655909591", "ip": "106.158.139.230", "country": "JP", "country_long": "Japan", "speed_mbps": 701.3, "uptime_days": 4.3, "log_policy": "2weeks", "operator": "eater's owner"},
+    {"host": "vpn953960224", "ip": "114.16.18.46", "country": "JP", "country_long": "Japan", "speed_mbps": 545.9, "uptime_days": 3.4, "log_policy": "2weeks", "operator": "T-Kname's owner"},
+    {"host": "vpn855551265", "ip": "122.36.8.16", "country": "KR", "country_long": "Korea Republic of", "speed_mbps": 88.6, "uptime_days": 7.2, "log_policy": "2weeks", "operator": "DESKTOP-F0AB0IT's owner"},
+    {"host": "vpn211969447", "ip": "118.41.236.148", "country": "KR", "country_long": "Korea Republic of", "speed_mbps": 83.7, "uptime_days": 5.1, "log_policy": "2weeks", "operator": "DESKTOP-KHCJQM0's owner"},
+    {"host": "vpn987180915", "ip": "106.168.253.245", "country": "JP", "country_long": "Japan", "speed_mbps": 67.8, "uptime_days": 5.1, "log_policy": "2weeks", "operator": "DESKTOP-TDBEP88's owner"},
+    {"host": "vpn237166644", "ip": "121.156.29.29", "country": "KR", "country_long": "Korea Republic of", "speed_mbps": 117.9, "uptime_days": 4.3, "log_policy": "2weeks", "operator": "DESKTOP-DUN3CS5's owner"},
+    {"host": "vpn415748184", "ip": "125.202.166.110", "country": "JP", "country_long": "Japan", "speed_mbps": 327.2, "uptime_days": 2.4, "log_policy": "2weeks", "operator": "GALLERIA-RL5C-R35T's owner"},
+    {"host": "vpn888165520", "ip": "14.133.60.67", "country": "JP", "country_long": "Japan", "speed_mbps": 90.9, "uptime_days": 3.4, "log_policy": "2weeks", "operator": "idea-PC's owner"},
+    {"host": "vpn705026594", "ip": "58.98.175.87", "country": "JP", "country_long": "Japan", "speed_mbps": 197.9, "uptime_days": 2.6, "log_policy": "2weeks", "operator": "DESKTOP-RAKN0HV's owner"},
+    {"host": "vpn473206366", "ip": "60.119.199.206", "country": "JP", "country_long": "Japan", "speed_mbps": 265.4, "uptime_days": 2.3, "log_policy": "2weeks", "operator": "DESKTOP-HUUFSTU's owner"},
+    {"host": "vpn559430764", "ip": "126.219.117.54", "country": "JP", "country_long": "Japan", "speed_mbps": 214.1, "uptime_days": 2.3, "log_policy": "2weeks", "operator": "tukune33333's owner"},
+    {"host": "vpn517286755", "ip": "1.53.96.73", "country": "VN", "country_long": "Viet Nam", "speed_mbps": 66.4, "uptime_days": 4.3, "log_policy": "2weeks", "operator": "CAM-PC's owner"},
+    {"host": "vpn148293641", "ip": "175.208.46.223", "country": "KR", "country_long": "Korea Republic of", "speed_mbps": 232.8, "uptime_days": 2.1, "log_policy": "2weeks", "operator": "DESKTOP-6MGC1KD's owner"},
+    {"host": "vpn946999877", "ip": "58.183.127.232", "country": "JP", "country_long": "Japan", "speed_mbps": 212.3, "uptime_days": 2.1, "log_policy": "2weeks", "operator": "トムとジェリーの配下's owner"},
+    {"host": "vpn809753260", "ip": "124.246.174.153", "country": "JP", "country_long": "Japan", "speed_mbps": 963.1, "uptime_days": 1.3, "log_policy": "2weeks", "operator": "DESKTOP-4OL02EV's owner"},
+    {"host": "vpn160593065", "ip": "211.230.99.159", "country": "KR", "country_long": "Korea Republic of", "speed_mbps": 98.4, "uptime_days": 2.3, "log_policy": "2weeks", "operator": "DESKTOP-83AFFI0's owner"},
+    {"host": "vpn966533712", "ip": "59.6.114.192", "country": "KR", "country_long": "Korea Republic of", "speed_mbps": 320.5, "uptime_days": 1.2, "log_policy": "2weeks", "operator": "PC's owner"},
+    {"host": "vpn829299859", "ip": "153.176.147.247", "country": "JP", "country_long": "Japan", "speed_mbps": 92.9, "uptime_days": 1.2, "log_policy": "2weeks", "operator": "WIN-T2NQ1SDSOFK's owner"},
+    {"host": "vpn666075659", "ip": "118.36.15.104", "country": "KR", "country_long": "Korea Republic of", "speed_mbps": 85.9, "uptime_days": 1.3, "log_policy": "2weeks", "operator": "DESKTOP-2KJUIB4's owner"},
+    {"host": "vpn759533362", "ip": "183.103.84.180", "country": "KR", "country_long": "Korea Republic of", "speed_mbps": 55.2, "uptime_days": 1.2, "log_policy": "2weeks", "operator": "DESKTOP-1A8DDC1's owner"},
+    {"host": "vpn221487938", "ip": "126.125.49.30", "country": "JP", "country_long": "Japan", "speed_mbps": 30.7, "uptime_days": 1.3, "log_policy": "2weeks", "operator": "user's owner"},
+    {"host": "vpn25252525", "ip": "180.144.222.102", "country": "JP", "country_long": "Japan", "speed_mbps": 7.7, "uptime_days": 2.1, "log_policy": "2weeks", "operator": "Matsushin-PC's owner"},
+    {"host": "vpn193189456", "ip": "184.22.34.95", "country": "TH", "country_long": "Thailand", "speed_mbps": 353.5, "uptime_days": 0.3, "log_policy": "2weeks", "operator": "B's owner"},
 ]
 
 
@@ -1457,140 +1467,141 @@ class App(tk.Tk):
             f'{len(groups)} FQDN groups ({exc_groups} exclusive) · '
             f'{len(ip_routes)} IP routes ({exc_ips} exclusive)')
 
-    # ── VPN Gate tab ───────────────────────────────────────────────────────
+    # ── VPN Gate tab (split into Bootstrap / Live sub-tabs for laptops) ───
     def _build_vpngate_tab(self):
         f = self.tab_vpngate
+        inner = ttk.Notebook(f)
+        inner.pack(fill='both', expand=True)
+        self.tab_vpngate_bootstrap = ttk.Frame(inner)
+        self.tab_vpngate_live      = ttk.Frame(inner)
+        inner.add(self.tab_vpngate_bootstrap, text='  Bootstrap servers  ')
+        inner.add(self.tab_vpngate_live,      text='  Live list  ')
+        self._build_vpngate_bootstrap_tab()
+        self._build_vpngate_live_tab()
 
-        # Bootstrap section — always available, no external fetch needed.
-        boot = ttk.LabelFrame(f, text=' Bootstrap servers (built-in, no VPN needed to use) ',
-                                padding=6)
-        boot.pack(fill='x', padx=4, pady=(6, 4))
-        ttk.Label(boot,
-                  text='vpngate.net is often unreachable from restricted networks. '
-                       'These ~10 hand-picked servers are included in the app so you can '
-                       'bootstrap an SSTP tunnel from scratch. Click "Test reachability" to '
-                       'check which are reachable from your network right now.',
-                  foreground='#555', wraplength=900, justify='left').pack(anchor='w',
-                                                                           pady=(0, 4))
+    def _build_vpngate_bootstrap_tab(self):
+        f = self.tab_vpngate_bootstrap
+        subnets = len({'.'.join(s['ip'].split('.')[:3]) for s in BOOTSTRAP_VPNGATE_SERVERS})
+        ttk.Label(f,
+                  text=f'{len(BOOTSTRAP_VPNGATE_SERVERS)} built-in servers across {subnets} distinct /24 subnets. '
+                       'Use these to bootstrap an SSTP tunnel when vpngate.net is blocked on your ISP. '
+                       'Credentials are the VPN Gate defaults: vpn / vpn.',
+                  foreground='#555', wraplength=1100, justify='left'
+                  ).pack(anchor='w', padx=6, pady=(6, 4))
 
-        boot_top = ttk.Frame(boot)
-        boot_top.pack(fill='x')
-        ttk.Button(boot_top, text='Test reachability',
+        toolbar = ttk.Frame(f)
+        toolbar.pack(fill='x', padx=4, pady=(0, 4))
+        ttk.Button(toolbar, text='🔍 Test reachability',
                    command=self._bootstrap_test_all).pack(side='left')
-        self.bootstrap_status_var = tk.StringVar(value=f'{len(BOOTSTRAP_VPNGATE_SERVERS)} servers · not tested yet')
-        ttk.Label(boot_top, textvariable=self.bootstrap_status_var, foreground='#555',
+        ttk.Button(toolbar, text='▶ Create SSTP interface from selected',
+                   command=self._bootstrap_create_interface,
+                   style='Accent.TButton').pack(side='left', padx=(6, 0))
+        self.bootstrap_status_var = tk.StringVar(value='Not tested yet')
+        ttk.Label(toolbar, textvariable=self.bootstrap_status_var, foreground='#555',
                   style='Status.TLabel').pack(side='left', padx=10)
 
-        # Bootstrap table
-        bt_frame = ttk.Frame(boot)
-        bt_frame.pack(fill='x', pady=(4, 0))
+        tf = ttk.Frame(f)
+        tf.pack(fill='both', expand=True, padx=4, pady=4)
         cols = ('reach', 'country', 'host', 'ip', 'mbps', 'uptime', 'op')
-        self.bootstrap_tree = ttk.Treeview(bt_frame, columns=cols, show='headings',
-                                             selectmode='browse', height=10)
+        self.bootstrap_tree = ttk.Treeview(tf, columns=cols, show='headings',
+                                             selectmode='browse')
         headings = {'reach': 'Reach', 'country': 'Country', 'host': 'Host',
-                    'ip': 'IP', 'mbps': 'Mbps', 'uptime': 'Uptime d', 'op': 'Operator'}
-        widths = {'reach': 85, 'country': 80, 'host': 170, 'ip': 120,
-                  'mbps': 70, 'uptime': 80, 'op': 280}
+                    'ip': 'IP', 'mbps': 'Mbps', 'uptime': 'Up d', 'op': 'Operator'}
+        widths = {'reach': 80, 'country': 70, 'host': 150, 'ip': 120,
+                  'mbps': 65, 'uptime': 55, 'op': 280}
         for c in cols:
-            self.bootstrap_tree.heading(c, text=headings[c])
+            self.bootstrap_tree.heading(c, text=headings[c],
+                command=lambda col=c: self._bootstrap_sort(col))
             self.bootstrap_tree.column(c, width=widths[c],
-                                         anchor='e' if c in ('mbps', 'uptime') else 'w')
+                anchor='e' if c in ('mbps', 'uptime') else 'w')
         self.bootstrap_tree.tag_configure('reach_ok', background='#dff5df')
-        self.bootstrap_tree.tag_configure('reach_bad', background='#ffd7d7')
-        self.bootstrap_tree.pack(side='left', fill='x', expand=True)
+        self.bootstrap_tree.tag_configure('reach_bad', background='#ffe0e0')
+        self.bootstrap_tree.pack(side='left', fill='both', expand=True)
+        ysc = ttk.Scrollbar(tf, orient='vertical', command=self.bootstrap_tree.yview)
+        ysc.pack(side='right', fill='y')
+        self.bootstrap_tree.configure(yscrollcommand=ysc.set)
+        self.bootstrap_reach_results: dict = {}
+        self.bootstrap_sort_col = 'uptime'
+        self.bootstrap_sort_rev = True
         self._bootstrap_populate()
 
-        boot_act = ttk.Frame(boot)
-        boot_act.pack(fill='x', pady=(6, 0))
-        ttk.Button(boot_act, text='▶ Create SSTP interface from selected bootstrap server',
-                   command=self._bootstrap_create_interface,
-                   style='Accent.TButton').pack(side='left')
-        ttk.Label(boot_act, text='  (creds: vpn / vpn — the fixed VPN Gate defaults)',
-                  foreground='#888', style='Status.TLabel').pack(side='left')
+    def _build_vpngate_live_tab(self):
+        f = self.tab_vpngate_live
+        ttk.Label(f,
+                  text='Live list from vpngate.net. Requires vpngate.net to be routable — '
+                       'if blocked, use a Bootstrap server first, tick the "VPN Gate (vpngate.net)" '
+                       'service and Apply, then come back here.',
+                  foreground='#555', wraplength=1100, justify='left'
+                  ).pack(anchor='w', padx=6, pady=(6, 4))
 
-        ttk.Separator(f, orient='horizontal').pack(fill='x', padx=4, pady=6)
-
-        # Top toolbar for live list
-        ttk.Label(f, text='Live list (needs vpngate.net reachable — '
-                          'route vpngate_net service through VPN first):',
-                  foreground='#555').pack(anchor='w', padx=6)
-        top = ttk.Frame(f, padding=(0, 4))
-        top.pack(fill='x', padx=4, pady=(4, 0))
-        ttk.Button(top, text='⟳ Refresh list',
+        toolbar = ttk.Frame(f)
+        toolbar.pack(fill='x', padx=4, pady=(0, 4))
+        ttk.Button(toolbar, text='⟳ Refresh',
                    command=self._on_vpngate_refresh,
                    style='Accent.TButton').pack(side='left')
         self.vpngate_status_var = tk.StringVar(value='Not loaded yet')
-        ttk.Label(top, textvariable=self.vpngate_status_var, foreground='#555',
+        ttk.Label(toolbar, textvariable=self.vpngate_status_var, foreground='#555',
                   style='Status.TLabel').pack(side='left', padx=10)
 
-        # Filters
-        filt = ttk.LabelFrame(f, text=' Filters ', padding=6)
-        filt.pack(fill='x', padx=4, pady=4)
-        ttk.Label(filt, text='Country:').grid(row=0, column=0, sticky='e', padx=(0, 4))
+        filt = ttk.Frame(f)
+        filt.pack(fill='x', padx=4, pady=(0, 4))
+        ttk.Label(filt, text='Country:').pack(side='left')
         self.vpngate_country_var = tk.StringVar(value='Any')
         self.vpngate_country_combo = ttk.Combobox(filt, textvariable=self.vpngate_country_var,
-                                                   state='readonly', width=22)
-        self.vpngate_country_combo.grid(row=0, column=1, sticky='w')
+                                                   state='readonly', width=18)
+        self.vpngate_country_combo.pack(side='left', padx=(4, 8))
         self.vpngate_country_combo.bind('<<ComboboxSelected>>', lambda e: self._vpngate_repaint())
-
-        ttk.Label(filt, text='Max ping ms:').grid(row=0, column=2, sticky='e', padx=(12, 4))
+        ttk.Label(filt, text='Max ping:').pack(side='left')
         self.vpngate_ping_var = tk.StringVar(value='1000')
-        ttk.Entry(filt, textvariable=self.vpngate_ping_var, width=6).grid(row=0, column=3, sticky='w')
-        ttk.Label(filt, text='Min Mbps:').grid(row=0, column=4, sticky='e', padx=(12, 4))
+        ttk.Entry(filt, textvariable=self.vpngate_ping_var, width=6).pack(side='left', padx=(4, 8))
+        ttk.Label(filt, text='Min Mbps:').pack(side='left')
         self.vpngate_speed_var = tk.StringVar(value='5')
-        ttk.Entry(filt, textvariable=self.vpngate_speed_var, width=6).grid(row=0, column=5, sticky='w')
+        ttk.Entry(filt, textvariable=self.vpngate_speed_var, width=6).pack(side='left', padx=(4, 8))
         self.vpngate_nolog_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(filt, text='No-logs only',
                         variable=self.vpngate_nolog_var,
-                        command=self._vpngate_repaint).grid(row=0, column=6, padx=(12, 4))
-        ttk.Button(filt, text='Apply filters',
-                   command=self._vpngate_repaint).grid(row=0, column=7, padx=(12, 0))
+                        command=self._vpngate_repaint).pack(side='left', padx=(0, 8))
+        ttk.Button(filt, text='Apply',
+                   command=self._vpngate_repaint).pack(side='left')
 
-        # Table
-        tree_frame = ttk.Frame(f)
-        tree_frame.pack(fill='both', expand=True, padx=4, pady=4)
+        tf = ttk.Frame(f)
+        tf.pack(fill='both', expand=True, padx=4, pady=4)
         cols = ('country', 'host', 'ip', 'ping', 'mbps', 'uptime', 'sessions', 'log', 'op')
-        self.vpngate_tree = ttk.Treeview(tree_frame, columns=cols,
-                                           show='headings', selectmode='browse', height=18)
-        headings = {
-            'country': 'Country', 'host': 'Hostname', 'ip': 'IP',
-            'ping': 'Ping ms', 'mbps': 'Mbps', 'uptime': 'Uptime d',
-            'sessions': 'Users', 'log': 'Log policy', 'op': 'Operator',
-        }
-        widths = {'country': 90, 'host': 230, 'ip': 120, 'ping': 70, 'mbps': 70,
-                  'uptime': 80, 'sessions': 60, 'log': 90, 'op': 180}
+        self.vpngate_tree = ttk.Treeview(tf, columns=cols,
+                                           show='headings', selectmode='browse')
+        headings = {'country': 'Country', 'host': 'Hostname', 'ip': 'IP',
+                    'ping': 'Ping', 'mbps': 'Mbps', 'uptime': 'Up d',
+                    'sessions': 'Users', 'log': 'Log policy', 'op': 'Operator'}
+        widths = {'country': 75, 'host': 180, 'ip': 120, 'ping': 55, 'mbps': 65,
+                  'uptime': 55, 'sessions': 55, 'log': 80, 'op': 210}
         for c in cols:
             self.vpngate_tree.heading(c, text=headings[c],
                                        command=lambda col=c: self._vpngate_sort(col))
-            self.vpngate_tree.column(c, width=widths[c], anchor='w' if c in ('country', 'host', 'ip', 'op', 'log') else 'e')
+            self.vpngate_tree.column(c, width=widths[c],
+                anchor='w' if c in ('country', 'host', 'ip', 'op', 'log') else 'e')
         self.vpngate_tree.pack(side='left', fill='both', expand=True)
-        ysc = ttk.Scrollbar(tree_frame, orient='vertical', command=self.vpngate_tree.yview)
+        ysc = ttk.Scrollbar(tf, orient='vertical', command=self.vpngate_tree.yview)
         ysc.pack(side='right', fill='y')
         self.vpngate_tree.configure(yscrollcommand=ysc.set)
         self.vpngate_tree.bind('<<TreeviewSelect>>', lambda e: self._vpngate_on_select())
 
-        # Bottom action row
-        act = ttk.Frame(f, padding=(0, 4))
-        act.pack(fill='x', padx=4, pady=4)
-        ttk.Button(act, text='Copy SSTP host:port',
-                   command=self._vpngate_copy_host).pack(side='left', padx=2)
-        ttk.Button(act, text='Copy credentials (vpn/vpn)',
-                   command=self._vpngate_copy_creds).pack(side='left', padx=2)
+        act = ttk.Frame(f)
+        act.pack(fill='x', padx=4, pady=(0, 4))
+        ttk.Button(act, text='Copy host:port',
+                   command=self._vpngate_copy_host).pack(side='left')
+        ttk.Button(act, text='Copy creds (vpn/vpn)',
+                   command=self._vpngate_copy_creds).pack(side='left', padx=(4, 0))
         self.btn_vpngate_create = ttk.Button(
             act, text='▶ Create SSTP interface on router',
             command=self._vpngate_create_interface,
             style='Accent.TButton')
-        self.btn_vpngate_create.pack(side='right', padx=2)
-        ttk.Label(act, text='(creds are the fixed VPN Gate defaults: vpn / vpn)',
-                  foreground='#888', style='Status.TLabel').pack(side='right', padx=12)
+        self.btn_vpngate_create.pack(side='right')
 
-        # State
         self.vpngate_all: list[dict] = []
         self.vpngate_shown: list[dict] = []
         self.vpngate_sort_col = 'mbps'
         self.vpngate_sort_rev = True
-        # Attempt to show cached data on first view
-        cached = CACHE.get('vpngate', TTL_VPNGATE * 6)   # show even somewhat stale data
+        cached = CACHE.get('vpngate', TTL_VPNGATE * 6)
         if cached:
             self.vpngate_all = cached
             self._vpngate_populate_country_filter()
@@ -1601,13 +1612,30 @@ class App(tk.Tk):
     # ── Bootstrap helpers ─────────────────────────────────────────────────
     def _bootstrap_populate(self, results: Optional[dict] = None):
         """Render the bootstrap table. results: {host: (reachable, rtt_ms)}."""
+        if results is not None:
+            self.bootstrap_reach_results = results
         self.bootstrap_tree.delete(*self.bootstrap_tree.get_children())
-        for s in BOOTSTRAP_VPNGATE_SERVERS:
-            if results is None:
-                reach = '…'
+
+        # Sort copy of the bootstrap list for display
+        sort_col = getattr(self, 'bootstrap_sort_col', 'uptime')
+        rev = getattr(self, 'bootstrap_sort_rev', True)
+        key_map = {'reach': lambda s: (1 if self.bootstrap_reach_results.get(s['host'], (False, -1))[0] else 0,
+                                        -(self.bootstrap_reach_results.get(s['host'], (False, 99999))[1] or 99999)),
+                   'country': lambda s: s['country'],
+                   'host':    lambda s: s['host'],
+                   'ip':      lambda s: tuple(int(o) for o in s['ip'].split('.')),
+                   'mbps':    lambda s: s.get('speed_mbps', 0),
+                   'uptime':  lambda s: s.get('uptime_days', 0),
+                   'op':      lambda s: s.get('operator', '')}
+        key = key_map.get(sort_col, key_map['uptime'])
+        rows = sorted(BOOTSTRAP_VPNGATE_SERVERS, key=key, reverse=rev)
+
+        for s in rows:
+            if not self.bootstrap_reach_results:
+                reach = '—'
                 tag: tuple = ()
             else:
-                ok, rtt = results.get(s['host'], (False, -1))
+                ok, rtt = self.bootstrap_reach_results.get(s['host'], (False, -1))
                 if ok:
                     reach = f'✓ {int(rtt)} ms'
                     tag = ('reach_ok',)
@@ -1621,14 +1649,23 @@ class App(tk.Tk):
                         s['uptime_days'], s.get('operator', '')),
                 tags=tag)
 
+    def _bootstrap_sort(self, col: str):
+        if self.bootstrap_sort_col == col:
+            self.bootstrap_sort_rev = not self.bootstrap_sort_rev
+        else:
+            self.bootstrap_sort_col = col
+            self.bootstrap_sort_rev = col in ('mbps', 'uptime', 'reach')
+        self._bootstrap_populate()
+
     def _bootstrap_test_all(self):
         self.bootstrap_status_var.set('Testing TCP reachability on port 443…')
-        self._bootstrap_populate(None)
+        # Clear previous results so rows show as "—" during the run
+        self.bootstrap_reach_results = {}
+        self._bootstrap_populate()
 
         def do():
             results: dict[str, tuple[bool, float]] = {}
             for s in BOOTSTRAP_VPNGATE_SERVERS:
-                # Prefer IP to avoid DNS issues; fall back to hostname.
                 target = s.get('ip') or s['host']
                 results[s['host']] = check_tcp_reachable(target, 443, timeout=3.0)
             return results
@@ -1643,6 +1680,10 @@ class App(tk.Tk):
                 f'{ok_count}/{len(result)} reachable from this PC')
             self.log(f'Bootstrap reachability: {ok_count}/{len(result)} servers up.',
                      'ok' if ok_count else 'warn')
+            # When results arrive, sort by reach so reachable ones bubble to top
+            self.bootstrap_sort_col = 'reach'
+            self.bootstrap_sort_rev = True
+            self._bootstrap_populate()
 
         self.worker.run(do, on_done=done)
 

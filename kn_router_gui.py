@@ -25,7 +25,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Callable, Optional
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '0.5.1'
+APP_VERSION = '0.5.2'
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
 DEFAULT_TELNET_PORT = 23
@@ -478,7 +478,14 @@ class KeeneticClient:
         errs: list[str] = []
         self.run(f'object-group fqdn {name}')
         if description:
-            self.run(f'description {description}')
+            # Keenetic requires descriptions with spaces/special chars to be
+            # double-quoted. Strip any embedded quotes to avoid breaking the
+            # parser, then always quote for safety.
+            safe = description.replace('"', '').strip()
+            if safe:
+                out = self.run(f'description "{safe}"')
+                if 'rror' in out or 'nvalid' in out.lower():
+                    errs.append(f'description: {out.strip().splitlines()[-1] if out.strip() else "error"}')
         for entry in entries:
             out = self.run(f'include {entry}')
             if 'rror' in out or 'nvalid' in out.lower():

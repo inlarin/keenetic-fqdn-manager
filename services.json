@@ -256,10 +256,9 @@
       "id": "meta",
       "name": "Facebook / Instagram (Meta)",
       "category": "Social",
-      "description": "Facebook, Instagram, Messenger, Threads, Meta.",
+      "description": "Facebook, Instagram, Messenger, Threads, Meta. Upstream v2fly 'facebook' list is intentionally NOT wired — it's ~400 entries of typosquats and brand-protection domains and does not cover Instagram/Threads/Messenger.",
       "fqdn": ["facebook.com", "www.facebook.com", "m.facebook.com", "instagram.com", "www.instagram.com", "threads.net", "www.threads.net", "messenger.com", "www.messenger.com", "fbcdn.net", "cdninstagram.com", "fb.com", "meta.com"],
-      "ipv4_cidr": [],
-      "upstream": [{"type": "v2fly", "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/facebook"}]
+      "ipv4_cidr": []
     },
     {
       "id": "tiktok",

@@ -26,7 +26,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Callable, Optional
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '0.8.1'
+APP_VERSION = '0.8.2'
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
 DEFAULT_TELNET_PORT = 23
@@ -1540,6 +1540,8 @@ class App(tk.Tk):
         ttk.Button(toolbar, text='⟳ Refresh',
                    command=self._on_vpngate_refresh,
                    style='Accent.TButton').pack(side='left')
+        ttk.Button(toolbar, text='🔍 Test reachability',
+                   command=self._vpngate_test_reach).pack(side='left', padx=(6, 0))
         self.vpngate_status_var = tk.StringVar(value='Not loaded yet')
         ttk.Label(toolbar, textvariable=self.vpngate_status_var, foreground='#555',
                   style='Status.TLabel').pack(side='left', padx=10)
@@ -1567,19 +1569,21 @@ class App(tk.Tk):
 
         tf = ttk.Frame(f)
         tf.pack(fill='both', expand=True, padx=4, pady=4)
-        cols = ('country', 'host', 'ip', 'ping', 'mbps', 'uptime', 'sessions', 'log', 'op')
+        cols = ('reach', 'country', 'host', 'ip', 'ping', 'mbps', 'uptime', 'sessions', 'log', 'op')
         self.vpngate_tree = ttk.Treeview(tf, columns=cols,
                                            show='headings', selectmode='browse')
-        headings = {'country': 'Country', 'host': 'Hostname', 'ip': 'IP',
+        headings = {'reach': 'Reach', 'country': 'Country', 'host': 'Hostname', 'ip': 'IP',
                     'ping': 'Ping', 'mbps': 'Mbps', 'uptime': 'Up d',
                     'sessions': 'Users', 'log': 'Log policy', 'op': 'Operator'}
-        widths = {'country': 75, 'host': 180, 'ip': 120, 'ping': 55, 'mbps': 65,
-                  'uptime': 55, 'sessions': 55, 'log': 80, 'op': 210}
+        widths = {'reach': 80, 'country': 75, 'host': 170, 'ip': 120, 'ping': 55, 'mbps': 65,
+                  'uptime': 55, 'sessions': 55, 'log': 80, 'op': 190}
         for c in cols:
             self.vpngate_tree.heading(c, text=headings[c],
                                        command=lambda col=c: self._vpngate_sort(col))
             self.vpngate_tree.column(c, width=widths[c],
                 anchor='w' if c in ('country', 'host', 'ip', 'op', 'log') else 'e')
+        self.vpngate_tree.tag_configure('reach_ok',  background='#dff5df')
+        self.vpngate_tree.tag_configure('reach_bad', background='#ffe0e0')
         self.vpngate_tree.pack(side='left', fill='both', expand=True)
         ysc = ttk.Scrollbar(tf, orient='vertical', command=self.vpngate_tree.yview)
         ysc.pack(side='right', fill='y')
@@ -1600,6 +1604,7 @@ class App(tk.Tk):
 
         self.vpngate_all: list[dict] = []
         self.vpngate_shown: list[dict] = []
+        self.vpngate_reach_results: dict = {}
         self.vpngate_sort_col = 'mbps'
         self.vpngate_sort_rev = True
         cached = CACHE.get('vpngate', TTL_VPNGATE * 6)
@@ -1780,9 +1785,12 @@ class App(tk.Tk):
                 self.log(f'VPN Gate fetch failed: {err}', 'err')
                 return
             self.vpngate_all = result
+            self.vpngate_reach_results = {}   # invalidate previous reach data
             self._vpngate_populate_country_filter()
             self._vpngate_repaint()
-            self.vpngate_status_var.set(f'{len(result)} servers (fresh)')
+            self.vpngate_status_var.set(
+                f'{len(result)} servers (fresh) · click "Test reachability" to '
+                'see which are actually reachable from your network')
             self.log(f'VPN Gate: {len(result)} servers loaded.', 'ok')
 
         self.worker.run(do, on_done=done)
@@ -1811,18 +1819,40 @@ class App(tk.Tk):
                 continue
             out.append(s)
         # Sort
-        key_map = {'country': 'CountryShort', 'host': 'HostName', 'ip': 'IP',
-                   'ping': 'Ping', 'mbps': 'SpeedMbps', 'uptime': 'UptimeDays',
-                   'sessions': 'NumVpnSessions', 'log': 'LogType', 'op': 'Operator'}
-        key = key_map.get(self.vpngate_sort_col, 'SpeedMbps')
-        out.sort(key=lambda r: (r.get(key, 0) if isinstance(r.get(key), (int, float)) else str(r.get(key, ''))),
-                 reverse=self.vpngate_sort_rev)
+        def reach_sort_key(s: dict):
+            r = self.vpngate_reach_results.get(s.get('HostName', ''))
+            if not r:
+                return (0, 0)  # untested
+            ok, rtt = r
+            return (2 if ok else 1, -(rtt if ok else 0))
+        key_map = {'country': lambda s: s.get('CountryShort', ''),
+                   'host':    lambda s: s.get('HostName', ''),
+                   'ip':      lambda s: s.get('IP', ''),
+                   'ping':    lambda s: s.get('Ping', 0),
+                   'mbps':    lambda s: s.get('SpeedMbps', 0),
+                   'uptime':  lambda s: s.get('UptimeDays', 0),
+                   'sessions':lambda s: s.get('NumVpnSessions', 0),
+                   'log':     lambda s: s.get('LogType', '') or '',
+                   'op':      lambda s: s.get('Operator', '') or '',
+                   'reach':   reach_sort_key}
+        key_fn = key_map.get(self.vpngate_sort_col, key_map['mbps'])
+        out.sort(key=key_fn, reverse=self.vpngate_sort_rev)
         self.vpngate_shown = out
         for s in out:
-            self.vpngate_tree.insert('', 'end', iid=s['HostName'],
+            hn = s.get('HostName', '')
+            r = self.vpngate_reach_results.get(hn)
+            if r is None:
+                reach = '—'
+                tag: tuple = ()
+            else:
+                ok, rtt = r
+                reach = f'✓ {int(rtt)} ms' if ok else '✗ blocked'
+                tag = ('reach_ok',) if ok else ('reach_bad',)
+            self.vpngate_tree.insert('', 'end', iid=hn,
                 values=(
+                    reach,
                     f'{s.get("CountryShort","")} {s.get("CountryLong","")}',
-                    s.get('HostName', ''),
+                    hn,
                     s.get('IP', ''),
                     s.get('Ping', 0),
                     s.get('SpeedMbps', 0),
@@ -1830,7 +1860,47 @@ class App(tk.Tk):
                     s.get('NumVpnSessions', 0),
                     (s.get('LogType', '') or '')[:30],
                     (s.get('Operator', '') or '')[:40],
-                ))
+                ), tags=tag)
+
+    def _vpngate_test_reach(self):
+        if not self.vpngate_all:
+            messagebox.showinfo(APP_NAME, 'Refresh the live list first.')
+            return
+        targets = list(self.vpngate_shown) or list(self.vpngate_all)
+        self.vpngate_status_var.set(
+            f'Testing TCP reachability on {len(targets)} servers (parallel, up to 2s each)…')
+        self.vpngate_reach_results = {}
+        self._vpngate_repaint()
+
+        def do():
+            results: dict[str, tuple[bool, float]] = {}
+            t0 = time.time()
+            def probe(srv: dict) -> tuple[str, tuple[bool, float]]:
+                target = srv.get('IP') or srv.get('HostName')
+                return srv.get('HostName', ''), check_tcp_reachable(target, 443, timeout=2.0)
+            # Cap parallelism to avoid being misread as a port scan.
+            with ThreadPoolExecutor(max_workers=min(60, len(targets))) as pool:
+                for host, res in pool.map(probe, targets):
+                    if host:
+                        results[host] = res
+            return results, time.time() - t0, len(targets)
+
+        def done(result, err):
+            if err is not None:
+                self.log(f'Reachability test failed: {err}', 'err')
+                return
+            results, dt, tested = result
+            self.vpngate_reach_results = results
+            self.vpngate_sort_col = 'reach'
+            self.vpngate_sort_rev = True
+            self._vpngate_repaint()
+            ok_count = sum(1 for v in results.values() if v[0])
+            self.vpngate_status_var.set(
+                f'{ok_count}/{tested} reachable · {dt:.1f}s · sorted by reach')
+            self.log(f'Live-list reachability: {ok_count}/{tested} servers reachable '
+                     f'({dt:.1f} seconds).', 'ok' if ok_count else 'warn')
+
+        self.worker.run(do, on_done=done)
 
     def _vpngate_sort(self, col: str):
         if self.vpngate_sort_col == col:

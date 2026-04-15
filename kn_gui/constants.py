@@ -5,7 +5,7 @@ import re
 from enum import Enum
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '1.1.0'
+APP_VERSION = '1.2.0'
 
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'

@@ -61,9 +61,20 @@ GUI для управления FQDN-маршрутами и IP-маршрута
 Требуется Python 3.10+ на Windows. Tkinter встроен.
 
 ```batch
-python -m pip install pyinstaller
+python -m pip install -r requirements-dev.txt
 build.bat
 ```
+
+## Тесты
+
+Non-UI слои покрыты pytest (тесты в `tests/`, запуск без Tkinter и без живого роутера):
+
+```bash
+python -m pytest tests/
+```
+
+CI-workflow `.github/workflows/test.yml` прогоняет тесты на каждом push/PR на Python 3.10–3.13.
+CI-workflow `.github/workflows/release.yml` автоматически собирает `.exe` и прикладывает к GitHub Release при push тега `v*`.
 
 Если `pip install` валится по таймауту на pypi.org — прошивайте `python_pypi` через VPN (уже в каталоге).
 

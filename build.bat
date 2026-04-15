@@ -1,12 +1,12 @@
 @echo off
 REM Build single-file exe for Windows.
-REM Requires: Python 3.10+ with PyInstaller installed (pip install pyinstaller).
+REM Requires: Python 3.10+ with PyInstaller installed.
 
 python -m PyInstaller --onefile --windowed ^
   --name KeeneticFqdnManager ^
-  --add-data "services.json;." ^
+  --add-data "data;data" ^
   --clean ^
-  kn_router_gui.py
+  main.py
 
 IF %ERRORLEVEL% NEQ 0 (
   echo Build failed.

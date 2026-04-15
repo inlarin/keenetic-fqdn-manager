@@ -1,0 +1,64 @@
+"""Shared constants: app metadata, TTLs, UI labels, regex, tree iid prefixes."""
+from __future__ import annotations
+
+import re
+from enum import Enum
+
+APP_NAME = 'Keenetic FQDN Manager'
+APP_VERSION = '1.0.0'
+
+DEFAULT_ROUTER = '192.168.32.1'
+DEFAULT_USER = 'admin'
+DEFAULT_TELNET_PORT = 23
+
+# Valid object-group / interface identifier characters.
+GROUP_NAME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_]{0,31}$')
+
+# Category → emoji icon used in the Services tree.
+CATEGORY_ICON = {
+    'AI': '🤖', 'Video': '📺', 'Music': '🎵', 'Messaging': '💬',
+    'Social': '👥', 'Dev': '⚙', 'Productivity': '📝', 'Content': '📰',
+    'Gaming': '🎮', 'Payment': '💳', 'Other': '📦',
+}
+
+# TTLs for DiskCache entries (seconds).
+TTL_VPNGATE      = 5 * 60
+TTL_V2FLY        = 6 * 60 * 60
+TTL_IP_PROVIDER  = 24 * 60 * 60
+TTL_ASN          = 24 * 60 * 60
+
+# Network safety: cap how many bytes HTTP fetchers will read.
+MAX_HTTP_BYTES = 20 * 1024 * 1024   # 20 MB — VPN Gate CSV comfortably fits.
+
+# VPN Gate public CSV.
+VPNGATE_URL = 'http://www.vpngate.net/api/iphone/'
+
+
+class ConnState(Enum):
+    DISCONNECTED = 'disconnected'
+    CONNECTING = 'connecting'
+    CONNECTED = 'connected'
+    ERROR = 'error'
+
+
+STATE_COLOR = {
+    ConnState.DISCONNECTED: '#888',
+    ConnState.CONNECTING:   '#e6a500',
+    ConnState.CONNECTED:    '#2c9f2c',
+    ConnState.ERROR:        '#c33',
+}
+
+STATE_LABEL = {
+    ConnState.DISCONNECTED: 'Disconnected',
+    ConnState.CONNECTING:   'Connecting…',
+    ConnState.CONNECTED:    'Connected',
+    ConnState.ERROR:        'Error',
+}
+
+# Tree iid namespaces (centralized so UI code doesn't sprinkle magic strings).
+IID_CATEGORY = 'cat::'
+IID_SERVICE  = 'svc::'
+IID_GROUP    = 'group::'
+IID_IPROUTE  = 'iproute::'
+IID_SECTION  = 'sect::'
+IID_BOOT     = 'boot::'

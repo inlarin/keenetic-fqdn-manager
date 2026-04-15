@@ -5,7 +5,7 @@ import re
 from enum import Enum
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '1.0.0'
+APP_VERSION = '1.1.0'
 
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
@@ -49,10 +49,10 @@ STATE_COLOR = {
 }
 
 STATE_LABEL = {
-    ConnState.DISCONNECTED: 'Disconnected',
-    ConnState.CONNECTING:   'Connecting…',
-    ConnState.CONNECTED:    'Connected',
-    ConnState.ERROR:        'Error',
+    ConnState.DISCONNECTED: 'Не подключён',
+    ConnState.CONNECTING:   'Подключение…',
+    ConnState.CONNECTED:    'Подключён',
+    ConnState.ERROR:        'Ошибка',
 }
 
 # Tree iid namespaces (centralized so UI code doesn't sprinkle magic strings).

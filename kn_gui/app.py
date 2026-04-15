@@ -58,15 +58,18 @@ class Worker:
         with self._lock:
             if self.thread is not None and self.thread.is_alive():
                 self.ui_queue.put(('log', ('warn',
-                    'Busy — another operation is in progress.')))
+                    'Занят — другая операция в процессе.')))
                 return
 
             def target():
+                self.ui_queue.put(('busy', True))
                 try:
                     result = fn(*args)
                     self.ui_queue.put(('done', (on_done, result, None)))
                 except Exception as e:
                     self.ui_queue.put(('done', (on_done, None, e)))
+                finally:
+                    self.ui_queue.put(('busy', False))
 
             self.thread = threading.Thread(target=target, daemon=True)
             self.thread.start()
@@ -124,6 +127,8 @@ class App(tk.Tk):
         main_pane = ttk.PanedWindow(self, orient='vertical')
         main_pane.pack(fill='both', expand=True, padx=8, pady=(0, 8))
         self._main_pane = main_pane
+        # After first layout pass, put the sash at ~75% (tabs) / 25% (log).
+        self.after(120, self._set_default_sash)
 
         nb_holder = ttk.Frame(main_pane)
         main_pane.add(nb_holder, weight=4)
@@ -135,26 +140,26 @@ class App(tk.Tk):
         self.tab_state    = ttk.Frame(nb)
         self.tab_vpngate  = ttk.Frame(nb)
         self.tab_catalog  = ttk.Frame(nb)
-        nb.add(self.tab_services, text='  Services  ')
-        nb.add(self.tab_state,    text='  Current state  ')
+        nb.add(self.tab_services, text='  Сервисы  ')
+        nb.add(self.tab_state,    text='  Состояние роутера  ')
         nb.add(self.tab_vpngate,  text='  VPN Gate  ')
-        nb.add(self.tab_catalog,  text='  Catalog  ')
+        nb.add(self.tab_catalog,  text='  Каталог  ')
         self._build_services_tab()
         self._build_state_tab()
         self._build_vpngate_tab()
         self._build_catalog_tab()
 
-        log_frame = ttk.LabelFrame(main_pane, text=' Log ')
+        log_frame = ttk.LabelFrame(main_pane, text=' Журнал ')
         main_pane.add(log_frame, weight=1)
         log_top = ttk.Frame(log_frame)
         log_top.pack(fill='x', padx=4, pady=(4, 0))
-        ttk.Button(log_top, text='Copy all', command=self._log_copy_all
+        ttk.Button(log_top, text='Копировать всё', command=self._log_copy_all
                    ).pack(side='left')
-        ttk.Button(log_top, text='Copy selection', command=self._log_copy_selection
+        ttk.Button(log_top, text='Копировать выделенное', command=self._log_copy_selection
                    ).pack(side='left', padx=4)
-        ttk.Button(log_top, text='Clear', command=self._log_clear
+        ttk.Button(log_top, text='Очистить', command=self._log_clear
                    ).pack(side='left', padx=4)
-        ttk.Label(log_top, text='(Ctrl+A select all · Ctrl+C copy · right-click for menu)',
+        ttk.Label(log_top, text='(Ctrl+A выделить всё · Ctrl+C копировать · правая кнопка — меню)',
                   foreground='#888', style='Status.TLabel'
                   ).pack(side='left', padx=12)
         self.log_box = scrolledtext.ScrolledText(
@@ -181,11 +186,11 @@ class App(tk.Tk):
         self.log_box.tag_configure('err',   foreground='#a51818')
         self.log_box.tag_configure('ts',    foreground='#888')
         self._log_menu = tk.Menu(self, tearoff=0)
-        self._log_menu.add_command(label='Copy selection', command=self._log_copy_selection)
-        self._log_menu.add_command(label='Copy all',       command=self._log_copy_all)
+        self._log_menu.add_command(label='Копировать выделенное', command=self._log_copy_selection)
+        self._log_menu.add_command(label='Копировать всё',        command=self._log_copy_all)
         self._log_menu.add_separator()
-        self._log_menu.add_command(label='Select all',     command=self._log_select_all)
-        self._log_menu.add_command(label='Clear',          command=self._log_clear)
+        self._log_menu.add_command(label='Выделить всё',          command=self._log_select_all)
+        self._log_menu.add_command(label='Очистить',              command=self._log_clear)
 
     def _build_header(self):
         wrap = ttk.Frame(self, padding=(8, 8, 8, 4))
@@ -200,26 +205,26 @@ class App(tk.Tk):
                                        style='Status.TLabel')
         self.status_label.grid(row=0, column=1, sticky='w', padx=(0, 12))
 
-        ttk.Label(wrap, text='Host:').grid(row=0, column=2, sticky='e', padx=(8, 4))
+        ttk.Label(wrap, text='Адрес:').grid(row=0, column=2, sticky='e', padx=(8, 4))
         self.host_var = tk.StringVar(value=self.ui_cfg.get('last_host', DEFAULT_ROUTER))
         self.host_entry = ttk.Entry(wrap, textvariable=self.host_var, width=18)
         self.host_entry.grid(row=0, column=3, sticky='w')
 
-        ttk.Label(wrap, text='User:').grid(row=0, column=4, sticky='e', padx=(12, 4))
+        ttk.Label(wrap, text='Логин:').grid(row=0, column=4, sticky='e', padx=(12, 4))
         self.user_var = tk.StringVar(value=self.ui_cfg.get('last_user', DEFAULT_USER))
         self.user_entry = ttk.Entry(wrap, textvariable=self.user_var, width=12)
         self.user_entry.grid(row=0, column=5, sticky='w')
 
-        ttk.Label(wrap, text='Password:').grid(row=0, column=6, sticky='e', padx=(12, 4))
+        ttk.Label(wrap, text='Пароль:').grid(row=0, column=6, sticky='e', padx=(12, 4))
         self.pass_var = tk.StringVar()
         self.pass_entry = ttk.Entry(wrap, textvariable=self.pass_var, show='•', width=18)
         self.pass_entry.grid(row=0, column=7, sticky='w')
 
-        self.btn_connect = ttk.Button(wrap, text='Connect',
-                                       command=self._on_connect_click, width=12)
+        self.btn_connect = ttk.Button(wrap, text='Подключить',
+                                       command=self._on_connect_click, width=14)
         self.btn_connect.grid(row=0, column=8, padx=10)
 
-        ttk.Label(wrap, text='Interface:').grid(row=1, column=2, sticky='e',
+        ttk.Label(wrap, text='Интерфейс:').grid(row=1, column=2, sticky='e',
                                                  padx=(8, 4), pady=(4, 0))
         self.iface_var = tk.StringVar()
         self.iface_combo = ttk.Combobox(wrap, textvariable=self.iface_var,
@@ -231,6 +236,9 @@ class App(tk.Tk):
                   style='Status.TLabel').grid(row=1, column=5, columnspan=4,
                                                sticky='w', padx=(12, 0), pady=(4, 0))
 
+        # Indeterminate progress bar (shown only while Worker is busy).
+        self.progress = ttk.Progressbar(self, mode='indeterminate')
+
         self.warn_frame = ttk.Frame(self, padding=(8, 4))
         self.warn_frame.pack(fill='x', padx=8, pady=(0, 4))
         self.warn_frame.pack_forget()
@@ -239,6 +247,14 @@ class App(tk.Tk):
                                     anchor='w', padx=10, pady=6, justify='left',
                                     wraplength=1000)
         self.warn_label.pack(fill='x')
+
+    def _set_default_sash(self):
+        try:
+            h = self._main_pane.winfo_height()
+            if h > 200:
+                self._main_pane.sashpos(0, int(h * 0.75))
+        except Exception:
+            pass
 
     def _bind_hotkeys(self):
         self.bind('<Control-Return>', lambda e: self._on_apply_services())
@@ -262,11 +278,11 @@ class App(tk.Tk):
         self.user_entry.configure(state=entry_state)
         self.pass_entry.configure(state=entry_state)
         if s == ConnState.CONNECTED:
-            self.btn_connect.configure(text='Disconnect', state='normal')
+            self.btn_connect.configure(text='Отключить', state='normal')
         elif s == ConnState.CONNECTING:
-            self.btn_connect.configure(text='Connecting…', state='disabled')
+            self.btn_connect.configure(text='Подключение…', state='disabled')
         else:
-            self.btn_connect.configure(text='Connect', state='normal')
+            self.btn_connect.configure(text='Подключить', state='normal')
         if s != ConnState.CONNECTED:
             self.iface_combo.configure(state='disabled')
 
@@ -314,6 +330,8 @@ class App(tk.Tk):
                         cb, result, err = payload
                         if cb is not None:
                             cb(result, err)
+                    elif kind == 'busy':
+                        self._set_busy(bool(payload))
                 except Exception as inner:
                     # Never let a buggy callback crash the event loop.
                     try:
@@ -324,25 +342,37 @@ class App(tk.Tk):
             pass
         self.after(100, self._drain_queue)
 
+    def _set_busy(self, busy: bool):
+        """Toggle the indeterminate progress bar + visual 'busy' hint."""
+        if busy:
+            self.progress.pack(fill='x', padx=8, pady=(0, 2))
+            self.progress.start(12)
+        else:
+            self.progress.stop()
+            self.progress.pack_forget()
+
     # ── Services tab ────────────────────────────────────────────────────
     def _build_services_tab(self):
         f = self.tab_services
+        # Top toolbar — filters + selection helpers only; primary Apply
+        # lives in a sticky bar at the bottom (below the split).
         top = ttk.Frame(f, padding=(0, 4))
         top.pack(fill='x', padx=4, pady=(4, 0))
-        ttk.Button(top, text='Select all', width=10,
+        ttk.Button(top, text='Выбрать все', width=14,
                    command=lambda: self._toggle_all_services(True)
                    ).pack(side='left', padx=(0, 4))
-        ttk.Button(top, text='Clear', width=8,
+        ttk.Button(top, text='Снять все', width=12,
                    command=lambda: self._toggle_all_services(False)
                    ).pack(side='left', padx=2)
-        ttk.Button(top, text='Select applied', width=14,
+        ttk.Button(top, text='Отметить применённые', width=22,
                    command=self._select_applied).pack(side='left', padx=2)
 
-        ttk.Label(top, text='Show:').pack(side='left', padx=(12, 2))
-        self.svc_filter_var = tk.StringVar(value='All')
+        ttk.Label(top, text='Показать:').pack(side='left', padx=(12, 2))
+        self.svc_filter_var = tk.StringVar(value='Все')
         flt = ttk.Combobox(top, textvariable=self.svc_filter_var,
-                            values=('All', 'Applied', 'Drifted', 'Not applied', 'Ticked'),
-                            state='readonly', width=12)
+                            values=('Все', 'Применённые', 'С расхождениями',
+                                    'Не применённые', 'Отмеченные'),
+                            state='readonly', width=18)
         flt.pack(side='left')
         flt.bind('<<ComboboxSelected>>', lambda e: self._populate_services())
 
@@ -350,12 +380,23 @@ class App(tk.Tk):
         ttk.Label(top, textvariable=self.svc_summary_var, foreground='#555',
                   style='Status.TLabel').pack(side='left', padx=12)
 
-        self.btn_apply = ttk.Button(top, text='▶  Apply  (Ctrl+Enter)',
+        # Sticky bottom action bar (packed first with side='bottom' so it
+        # stays visible regardless of tree height).
+        action_bar = ttk.Frame(f, padding=(6, 6))
+        action_bar.pack(side='bottom', fill='x', padx=4, pady=(0, 4))
+        self.btn_apply = ttk.Button(action_bar, text='▶  Применить  (Ctrl+Enter)',
                                      command=self._on_apply_services,
                                      style='Accent.TButton')
         self.btn_apply.pack(side='right', padx=(8, 0))
-        ttk.Checkbutton(top, text='Exclusive / Kill switch',
-                        variable=self.exclusive_var).pack(side='right', padx=10)
+        ks_chk = ttk.Checkbutton(
+            action_bar, text='Блокировать при разрыве VPN (kill switch)',
+            variable=self.exclusive_var)
+        ks_chk.pack(side='right', padx=10)
+        # Hover tooltip: why a user might want this
+        self._make_tooltip(ks_chk,
+            'Если VPN-туннель упадёт, трафик к защищённым сервисам будет\n'
+            'отбрасываться, а НЕ улетать через обычный канал провайдера.\n'
+            'Защита от VPN-leak. Включено по умолчанию.')
 
         svc_pane = ttk.PanedWindow(f, orient='horizontal')
         svc_pane.pack(fill='both', expand=True, padx=4, pady=4)
@@ -365,16 +406,16 @@ class App(tk.Tk):
         self.svc_tree = ttk.Treeview(
             tree_frame, columns=('check', 'fqdn', 'ipv4', 'applied'),
             show='tree headings', selectmode='browse', height=20)
-        self.svc_tree.heading('#0',      text='Category / Service')
+        self.svc_tree.heading('#0',      text='Категория / Сервис')
         self.svc_tree.heading('check',   text='✓')
         self.svc_tree.heading('fqdn',    text='FQDN')
         self.svc_tree.heading('ipv4',    text='IPv4')
-        self.svc_tree.heading('applied', text='State')
+        self.svc_tree.heading('applied', text='Состояние')
         self.svc_tree.column('#0',      width=300, anchor='w')
         self.svc_tree.column('check',   width=36, stretch=False, anchor='center')
         self.svc_tree.column('fqdn',    width=55, stretch=False, anchor='e')
         self.svc_tree.column('ipv4',    width=55, stretch=False, anchor='e')
-        self.svc_tree.column('applied', width=110, stretch=False, anchor='center')
+        self.svc_tree.column('applied', width=140, stretch=False, anchor='center')
         self.svc_tree.tag_configure('category', font=self._tree_font_bold, background='#eef2f7')
         self.svc_tree.tag_configure('applied',  foreground='#0a6b0a', background='#dff5df')
         self.svc_tree.tag_configure('drifted',  foreground='#8a4500', background='#ffeccc')
@@ -386,8 +427,9 @@ class App(tk.Tk):
         self.svc_tree.configure(yscrollcommand=yscroll.set)
         self.svc_tree.bind('<Button-1>', self._on_svc_click)
         self.svc_tree.bind('<<TreeviewSelect>>', self._on_svc_select)
+        self.svc_tree.bind('<space>', self._on_svc_space)
 
-        right = ttk.LabelFrame(svc_pane, text=' Details ')
+        right = ttk.LabelFrame(svc_pane, text=' Детали ')
         svc_pane.add(right, weight=2)
         self.svc_details = scrolledtext.ScrolledText(
             right, state='disabled', font=self._label_font, wrap='word',
@@ -407,7 +449,7 @@ class App(tk.Tk):
     def _populate_services(self):
         self.svc_tree.delete(*self.svc_tree.get_children())
         flt = getattr(self, 'svc_filter_var', None)
-        filter_mode = flt.get() if flt else 'All'
+        filter_mode = flt.get() if flt else 'Все'
 
         all_applied = all_drifted = 0
         for s in self.catalog.services:
@@ -426,13 +468,13 @@ class App(tk.Tk):
             for svc in by_cat[cat]:
                 state, _ = self._svc_state(svc)
                 checked = self.svc_checked.get(svc['id'], False)
-                if filter_mode == 'Applied' and state != 'applied':
+                if filter_mode == 'Применённые' and state != 'applied':
                     continue
-                if filter_mode == 'Drifted' and state != 'drifted':
+                if filter_mode == 'С расхождениями' and state != 'drifted':
                     continue
-                if filter_mode == 'Not applied' and state in ('applied', 'drifted'):
+                if filter_mode == 'Не применённые' and state in ('applied', 'drifted'):
                     continue
-                if filter_mode == 'Ticked' and not checked:
+                if filter_mode == 'Отмеченные' and not checked:
                     continue
                 visible.append((svc, state, checked))
             if not visible:
@@ -463,10 +505,12 @@ class App(tk.Tk):
 
         total = len(self.catalog.services)
         not_applied = total - all_applied - all_drifted
-        parts = [f'✓ {all_applied} applied', f'⚠ {all_drifted} drifted',
-                 f'◯ {not_applied} not applied', f'total {total}']
-        if filter_mode != 'All':
-            parts.append(f'showing {shown}')
+        parts = [f'✓ {all_applied} применено',
+                 f'⚠ {all_drifted} с расхождениями',
+                 f'◯ {not_applied} не применено',
+                 f'всего {total}']
+        if filter_mode != 'Все':
+            parts.append(f'показано {shown}')
         self.svc_summary_var.set('  ·  '.join(parts))
 
     def _svc_state(self, svc: dict) -> tuple[str, str]:
@@ -499,12 +543,24 @@ class App(tk.Tk):
         iid = self.svc_tree.identify_row(event.y)
         if not iid or not iid.startswith(IID_SERVICE):
             return
-        if col in ('#1',):
-            sid = iid.split('::', 1)[1]
-            self.svc_checked[sid] = not self.svc_checked.get(sid, False)
-            vals = list(self.svc_tree.item(iid, 'values'))
-            vals[0] = '☑' if self.svc_checked[sid] else '☐'
-            self.svc_tree.item(iid, values=vals)
+        # Click on the check column (#1) OR the name column (#0) toggles.
+        # Clicks on data columns (#2 FQDN, #3 IPv4, #4 State) just select
+        # (to let user inspect details without toggling).
+        if col in ('#0', '#1'):
+            self._toggle_svc(iid)
+
+    def _on_svc_space(self, event):
+        sel = self.svc_tree.selection()
+        if sel and sel[0].startswith(IID_SERVICE):
+            self._toggle_svc(sel[0])
+        return 'break'
+
+    def _toggle_svc(self, iid: str):
+        sid = iid.split('::', 1)[1]
+        self.svc_checked[sid] = not self.svc_checked.get(sid, False)
+        vals = list(self.svc_tree.item(iid, 'values'))
+        vals[0] = '☑' if self.svc_checked[sid] else '☐'
+        self.svc_tree.item(iid, values=vals)
 
     def _on_svc_select(self, event=None):
         sel = self.svc_tree.selection()
@@ -535,35 +591,41 @@ class App(tk.Tk):
         for a in svc.get('asn', []) or []:
             sources.append(f'AS{a}')
         if sources:
-            t.insert('end', '\nUpstream sources: ', 'h2')
+            t.insert('end', '\nИсточники для обновления: ', 'h2')
             t.insert('end', ', '.join(sources) + '\n', 'mono')
-            btn = ttk.Button(t, text='⟳ Refresh this service from upstream',
+            btn = ttk.Button(t, text='⟳ Обновить из upstream',
                               command=lambda s=svc: self._on_refresh_upstream_one(s))
             t.window_create('end', window=btn)
             t.insert('end', '\n')
         state, label = self._svc_state(svc)
         if state == 'applied':
-            t.insert('end', '\nApplied on router: ', 'h2')
+            t.insert('end', '\nПрименено на роутере: ', 'h2')
             t.insert('end', label + '\n', 'ok')
         elif state == 'drifted':
-            t.insert('end', '\nApplied with drift: ', 'h2')
+            t.insert('end', '\nПрименено с расхождением: ', 'h2')
             t.insert('end', label + '\n', 'warn')
             cat_inc = svc_includes(svc)
             rtr_inc = set(self.state['groups'].get(svc['id'], []))
             missing = cat_inc - rtr_inc
             extra   = rtr_inc - cat_inc
             if missing:
-                t.insert('end', f'  missing on router: {", ".join(sorted(missing))}\n', 'mono')
+                t.insert('end', f'  отсутствует на роутере: {", ".join(sorted(missing))}\n', 'mono')
             if extra:
-                t.insert('end', f'  extra on router:   {", ".join(sorted(extra))}\n', 'mono')
+                t.insert('end', f'  лишнее на роутере:      {", ".join(sorted(extra))}\n', 'mono')
             legacy = svc_legacy_routes(svc, self.state.get('ip_routes', []))
             if legacy:
                 legacy_txt = ', '.join(
-                    f'{r["network"]}/{r["mask"]} via {r["interface"]}' for r in legacy)
+                    f'{r["network"]}/{r["mask"]} через {r["interface"]}' for r in legacy)
                 t.insert('end',
-                         f'  legacy ip routes to migrate: {legacy_txt}\n', 'mono')
+                         f'  legacy ip routes для миграции: {legacy_txt}\n', 'mono')
+            # Inline one-click recovery
+            fix_btn = ttk.Button(t, text='⚒ Исправить расхождение (Apply этот сервис)',
+                                   command=lambda s=svc: self._fix_drift(s),
+                                   style='Accent.TButton')
+            t.window_create('end', window=fix_btn)
+            t.insert('end', '\n')
         else:
-            t.insert('end', '\nNot applied on router.\n', 'muted')
+            t.insert('end', '\nНа роутере отсутствует.\n', 'muted')
         t.insert('end', f'\nFQDN ({len(svc.get("fqdn", []))}):\n', 'h2')
         for d in svc.get('fqdn', []):
             t.insert('end', f'  {d}\n', 'mono')
@@ -573,12 +635,48 @@ class App(tk.Tk):
                 t.insert('end', f'  {c}\n', 'mono')
         t.configure(state='disabled')
 
+    def _fix_drift(self, svc: dict):
+        """One-click: tick only this service, run Apply."""
+        # Preserve prior ticks; overlay this one
+        self.svc_checked[svc['id']] = True
+        self._populate_services()
+        # Also ensure the service is visible (no filter hiding it)
+        if hasattr(self, 'svc_filter_var'):
+            self.svc_filter_var.set('Все')
+            self._populate_services()
+        self._on_apply_services()
+
     def _set_details_placeholder(self):
         t = self.svc_details
         t.configure(state='normal')
         t.delete('1.0', 'end')
-        t.insert('end', 'Pick a service on the left to see details.\n', 'muted')
+        t.insert('end', 'Выберите сервис слева, чтобы увидеть детали.\n', 'muted')
         t.configure(state='disabled')
+
+    # ── Tooltip helper ──────────────────────────────────────────────────
+    def _make_tooltip(self, widget, text: str):
+        """Show a small tooltip window on hover over the given widget."""
+        tip: dict = {'win': None}
+
+        def show(_e=None):
+            if tip['win'] is not None:
+                return
+            x, y = widget.winfo_rootx() + 20, widget.winfo_rooty() + widget.winfo_height() + 4
+            w = tk.Toplevel(widget)
+            w.wm_overrideredirect(True)
+            w.wm_geometry(f'+{x}+{y}')
+            tk.Label(w, text=text, justify='left', bg='#ffffe0',
+                     fg='#333', relief='solid', borderwidth=1,
+                     font=('Segoe UI', 9), padx=8, pady=4).pack()
+            tip['win'] = w
+
+        def hide(_e=None):
+            if tip['win'] is not None:
+                tip['win'].destroy()
+                tip['win'] = None
+
+        widget.bind('<Enter>', show)
+        widget.bind('<Leave>', hide)
 
     def _toggle_all_services(self, on: bool):
         for svc in self.catalog.services:
@@ -590,11 +688,11 @@ class App(tk.Tk):
         f = self.tab_state
         top = ttk.Frame(f, padding=(0, 4))
         top.pack(fill='x', padx=4, pady=(4, 0))
-        ttk.Button(top, text='Refresh (F5)',
+        ttk.Button(top, text='Обновить (F5)',
                    command=self._on_refresh_state).pack(side='left', padx=2)
-        ttk.Button(top, text='Delete selected',
+        ttk.Button(top, text='Удалить выбранное',
                    command=self._on_delete_selected).pack(side='left', padx=2)
-        ttk.Button(top, text='Save config',
+        ttk.Button(top, text='Сохранить конфиг',
                    command=self._on_save_config).pack(side='left', padx=12)
         self.state_summary_var = tk.StringVar(value='')
         ttk.Label(top, textvariable=self.state_summary_var, foreground='#555',
@@ -604,8 +702,8 @@ class App(tk.Tk):
         tree_frame.pack(fill='both', expand=True, padx=4, pady=4)
         self.state_tree = ttk.Treeview(tree_frame, columns=('details',),
                                          show='tree headings', height=20)
-        self.state_tree.heading('#0', text='Item')
-        self.state_tree.heading('details', text='Details')
+        self.state_tree.heading('#0', text='Элемент')
+        self.state_tree.heading('details', text='Детали')
         self.state_tree.column('#0', width=340, anchor='w')
         self.state_tree.column('details', width=560, anchor='w')
         self.state_tree.tag_configure('section',    font=self._tree_font_bold,
@@ -625,33 +723,33 @@ class App(tk.Tk):
         ip_routes = self.state['ip_routes']
 
         g_root = self.state_tree.insert('', 'end', iid=f'{IID_SECTION}fqdn',
-                                          text=f'  📁  FQDN groups ({len(groups)})',
+                                          text=f'  📁  FQDN-группы ({len(groups)})',
                                           values=('',), open=True, tags=('section',))
         for g, domains in sorted(groups.items()):
             route = next((r for r in dns_routes if r['group'] == g), None)
             if route:
                 flags = []
                 if route.get('auto'):   flags.append('auto')
-                if route.get('reject'): flags.append('exclusive (kill switch)')
+                if route.get('reject'): flags.append('kill switch')
                 details = f'→ {route["interface"]}  [{", ".join(flags) if flags else "—"}]'
                 tag = ('exclusive',) if route.get('reject') else ('unprotected',)
             else:
-                details = 'not bound to any route'
+                details = 'не привязана к маршруту'
                 tag = ('unprotected',)
             node = self.state_tree.insert(g_root, 'end', iid=f'{IID_GROUP}{g}',
-                                           text=f'      {g}  ·  {len(domains)} domains',
+                                           text=f'      {g}  ·  {len(domains)} записей',
                                            values=(details,), tags=tag)
             for d in domains:
                 self.state_tree.insert(node, 'end',
                                         text=f'            {d}', values=('',))
 
         r_root = self.state_tree.insert('', 'end', iid=f'{IID_SECTION}ip',
-                                          text=f'  🌐  IP routes ({len(ip_routes)})',
+                                          text=f'  🌐  IP-маршруты ({len(ip_routes)})',
                                           values=('',), open=True, tags=('section',))
         for i, r in enumerate(ip_routes):
             flags = []
             if r.get('auto'):   flags.append('auto')
-            if r.get('reject'): flags.append('exclusive (kill switch)')
+            if r.get('reject'): flags.append('kill switch')
             tag = ('exclusive',) if r.get('reject') else ('unprotected',)
             self.state_tree.insert(r_root, 'end', iid=f'{IID_IPROUTE}{i}',
                                     text=f'      {r["network"]}/{r["mask"]}',
@@ -661,8 +759,8 @@ class App(tk.Tk):
         exc_groups = sum(1 for r in dns_routes if r.get('reject'))
         exc_ips    = sum(1 for r in ip_routes if r.get('reject'))
         self.state_summary_var.set(
-            f'{len(groups)} FQDN groups ({exc_groups} exclusive) · '
-            f'{len(ip_routes)} IP routes ({exc_ips} exclusive)')
+            f'{len(groups)} FQDN-групп ({exc_groups} c kill switch) · '
+            f'{len(ip_routes)} IP-маршрутов ({exc_ips} c kill switch)')
 
     def _on_refresh_state(self):
         if not self._ensure_connected():
@@ -755,8 +853,8 @@ class App(tk.Tk):
         inner.pack(fill='both', expand=True)
         self.tab_vpngate_bootstrap = ttk.Frame(inner)
         self.tab_vpngate_live      = ttk.Frame(inner)
-        inner.add(self.tab_vpngate_bootstrap, text='  Bootstrap servers  ')
-        inner.add(self.tab_vpngate_live,      text='  Live list  ')
+        inner.add(self.tab_vpngate_bootstrap, text='  Встроенные серверы  ')
+        inner.add(self.tab_vpngate_live,      text='  Актуальный список  ')
         self._build_vpngate_bootstrap_tab()
         self._build_vpngate_live_tab()
 
@@ -765,20 +863,20 @@ class App(tk.Tk):
         bs = self.bootstrap_servers
         subnets = len({'.'.join(s['ip'].split('.')[:3]) for s in bs}) if bs else 0
         ttk.Label(f,
-                  text=f'{len(bs)} built-in servers across {subnets} distinct /24 subnets. '
-                       'Use these to bootstrap an SSTP tunnel when vpngate.net is blocked. '
-                       'Credentials are the VPN Gate defaults: vpn / vpn.',
+                  text=f'{len(bs)} серверов, вшитых в приложение, из {subnets} разных /24-подсетей. '
+                       'Пригодятся когда vpngate.net недоступен напрямую. '
+                       'Логин/пароль универсальны для VPN Gate: vpn / vpn.',
                   foreground='#555', wraplength=1100, justify='left'
                   ).pack(anchor='w', padx=6, pady=(6, 4))
 
         toolbar = ttk.Frame(f)
         toolbar.pack(fill='x', padx=4, pady=(0, 4))
-        ttk.Button(toolbar, text='🔍 Test reachability',
+        ttk.Button(toolbar, text='🔍 Проверить доступность',
                    command=self._bootstrap_test_all).pack(side='left')
-        ttk.Button(toolbar, text='▶ Create SSTP interface from selected',
+        ttk.Button(toolbar, text='▶ Создать SSTP-интерфейс из выбранного',
                    command=self._bootstrap_create_interface,
                    style='Accent.TButton').pack(side='left', padx=(6, 0))
-        self.bootstrap_status_var = tk.StringVar(value='Not tested yet')
+        self.bootstrap_status_var = tk.StringVar(value='Ещё не проверялось')
         ttk.Label(toolbar, textvariable=self.bootstrap_status_var, foreground='#555',
                   style='Status.TLabel').pack(side='left', padx=10)
 
@@ -787,8 +885,8 @@ class App(tk.Tk):
         cols = ('reach', 'country', 'host', 'ip', 'mbps', 'uptime', 'op')
         self.bootstrap_tree = ttk.Treeview(tf, columns=cols, show='headings',
                                              selectmode='browse')
-        headings = {'reach': 'Reach', 'country': 'Country', 'host': 'Host',
-                    'ip': 'IP', 'mbps': 'Mbps', 'uptime': 'Up d', 'op': 'Operator'}
+        headings = {'reach': 'Доступ', 'country': 'Страна', 'host': 'Хост',
+                    'ip': 'IP', 'mbps': 'Мбит/с', 'uptime': 'Дней', 'op': 'Оператор'}
         widths = {'reach': 80, 'country': 70, 'host': 150, 'ip': 120,
                   'mbps': 65, 'uptime': 55, 'op': 280}
         for c in cols:
@@ -812,6 +910,9 @@ class App(tk.Tk):
         if results is not None:
             self.bootstrap_reach_results = results
         self.bootstrap_tree.delete(*self.bootstrap_tree.get_children())
+        # 'blocked' label helper defined inline to match RU locale
+        _reach_ok = lambda rtt: f'✓ {int(rtt)} мс'
+        _reach_bad = '✗ блок'
         sort_col = getattr(self, 'bootstrap_sort_col', 'uptime')
         rev = getattr(self, 'bootstrap_sort_rev', True)
         key_map = {
@@ -834,9 +935,9 @@ class App(tk.Tk):
             else:
                 ok, rtt = self.bootstrap_reach_results.get(s['host'], (False, -1))
                 if ok:
-                    reach = f'✓ {int(rtt)} ms'; tag = ('reach_ok',)
+                    reach = _reach_ok(rtt); tag = ('reach_ok',)
                 else:
-                    reach = '✗ blocked'; tag = ('reach_bad',)
+                    reach = _reach_bad; tag = ('reach_bad',)
             self.bootstrap_tree.insert('', 'end',
                 iid=f'{IID_BOOT}{s["host"]}',
                 values=(reach, f'{s["country"]} {s["country_long"]}',
@@ -855,10 +956,10 @@ class App(tk.Tk):
     def _bootstrap_test_all(self):
         bs = self.bootstrap_servers
         if not bs:
-            messagebox.showinfo(APP_NAME, 'No bootstrap servers loaded.')
+            messagebox.showinfo(APP_NAME, 'Список встроенных серверов пуст.')
             return
         self.bootstrap_status_var.set(
-            f'Testing TCP reachability on port 443 (parallel, up to 2s each)…')
+            'Проверяю TCP-доступность на порту 443 (параллельно, до 2с на каждый)…')
         self.bootstrap_reach_results = {}
         self._bootstrap_populate()
 
@@ -875,7 +976,7 @@ class App(tk.Tk):
 
         def done(result, err):
             if err is not None:
-                self.log(f'Reachability test failed: {err}', 'err')
+                self.log(f'Проверка доступности не удалась: {err}', 'err')
                 return
             results, dt = result
             ok_count = sum(1 for v in results.values() if v[0])
@@ -883,9 +984,9 @@ class App(tk.Tk):
             self.bootstrap_sort_rev = True
             self._bootstrap_populate(results)
             self.bootstrap_status_var.set(
-                f'{ok_count}/{len(results)} reachable from this PC · {dt:.1f}s')
-            self.log(f'Bootstrap reachability: {ok_count}/{len(results)} reachable '
-                     f'({dt:.1f}s).', 'ok' if ok_count else 'warn')
+                f'{ok_count}/{len(results)} доступно с этого ПК · {dt:.1f} с')
+            self.log(f'Доступность встроенных серверов: {ok_count}/{len(results)} '
+                     f'({dt:.1f} с).', 'ok' if ok_count else 'warn')
 
         self.worker.run(do, on_done=done)
 
@@ -895,14 +996,15 @@ class App(tk.Tk):
         comps = self.client.router_info.get('components') or set()
         if comps and 'sstp' not in comps:
             messagebox.showerror(APP_NAME,
-                'SSTP client component is not installed on the router. '
-                'Install it via the web UI (Components page), reboot, then retry.')
+                'Компонент SSTP-клиент не установлен на роутере. '
+                'Установите через веб-UI (страница Компоненты), перезагрузите и попробуйте снова.')
             return
         sel = self.bootstrap_tree.selection()
         if not sel:
             messagebox.showinfo(APP_NAME,
-                'Select a bootstrap server in the table first.\n\n'
-                'Tip: click "Test reachability" to see which ones are reachable.')
+                'Сначала выберите сервер в таблице.\n\n'
+                'Совет: сперва нажмите «Проверить доступность» — доступные '
+                'станут зелёными.')
             return
         host_id = sel[0].split('::', 1)[1]
         server = next((s for s in self.bootstrap_servers
@@ -913,8 +1015,8 @@ class App(tk.Tk):
             peer=server.get('ip') or server['host'],
             country=server['country_long'],
             label=f'{server["country"]} {server["host"]}',
-            extra_info=(f'Speed: {server["speed_mbps"]} Mbps\n'
-                        f'Uptime: {server["uptime_days"]} days\n'))
+            extra_info=(f'Скорость: {server["speed_mbps"]} Мбит/с\n'
+                        f'Uptime:    {server["uptime_days"]} дней\n'))
 
     def _create_sstp_from_server(self, peer: str, country: str,
                                   label: str, extra_info: str = ''):
@@ -923,14 +1025,14 @@ class App(tk.Tk):
         new_name = f'SSTP{idx}'
         desc = f'VPN Gate {label}'
         if not messagebox.askyesno(APP_NAME,
-                f'Create SSTP interface "{new_name}"?\n\n'
-                f'Peer:    {peer}\n'
-                f'Country: {country}\n'
+                f'Создать SSTP-интерфейс «{new_name}»?\n\n'
+                f'Пир:     {peer}\n'
+                f'Страна:  {country}\n'
                 f'{extra_info}'
-                f'Creds:   vpn / vpn\n\n'
-                'The interface will connect immediately.'):
+                f'Логин:   vpn / vpn\n\n'
+                'Интерфейс подключится сразу после создания.'):
             return
-        self.log(f'Creating {new_name} ({peer})…')
+        self.log(f'Создаю {new_name} ({peer})…')
 
         def do():
             errs = self.client.create_sstp_interface(
@@ -942,7 +1044,7 @@ class App(tk.Tk):
 
         def done(result, err):
             if err is not None:
-                self.log(f'Create interface failed: {err}', 'err')
+                self.log(f'Не удалось создать интерфейс: {err}', 'err')
                 messagebox.showerror(APP_NAME, str(err))
                 return
             nm, ifaces, errs = result
@@ -953,59 +1055,59 @@ class App(tk.Tk):
                 self.iface_var.set(nm)
             for e in errs:
                 self.log(f'  {nm}: {e}', 'warn')
-            self.log(f'✓ Created {nm}. Selected as current interface.', 'ok')
+            self.log(f'✓ Создан {nm}, выбран как текущий интерфейс.', 'ok')
             self._update_warnings()
             messagebox.showinfo(APP_NAME,
-                f'Interface {nm} created.\n\n'
-                'Next: on the Services tab tick "VPN Gate (vpngate.net)" and Apply — '
-                'this makes vpngate.net reachable through the new tunnel so you can '
-                'use the Live list tab afterwards.')
+                f'Интерфейс {nm} создан.\n\n'
+                'Дальше: на вкладке Сервисы отметьте «VPN Gate (vpngate.net)» и '
+                'нажмите Применить — это откроет vpngate.net через новый туннель, '
+                'после чего вкладка «Актуальный список» заработает.')
 
         self.worker.run(do, on_done=done)
 
     def _build_vpngate_live_tab(self):
         f = self.tab_vpngate_live
         ttk.Label(f,
-                  text='Live list from vpngate.net. Requires vpngate.net to be routable — '
-                       'if blocked, use a Bootstrap server first, tick the "VPN Gate (vpngate.net)" '
-                       'service and Apply, then come back here.',
+                  text='Актуальный список с vpngate.net. Если vpngate.net недоступен — '
+                       'сначала используйте встроенный сервер, отметьте на вкладке Сервисы '
+                       '«VPN Gate (vpngate.net)», нажмите Применить, а потом возвращайтесь сюда.',
                   foreground='#555', wraplength=1100, justify='left'
                   ).pack(anchor='w', padx=6, pady=(6, 4))
 
         toolbar = ttk.Frame(f)
         toolbar.pack(fill='x', padx=4, pady=(0, 4))
-        ttk.Button(toolbar, text='⟳ Refresh', command=self._on_vpngate_refresh,
+        ttk.Button(toolbar, text='⟳ Обновить', command=self._on_vpngate_refresh,
                    style='Accent.TButton').pack(side='left')
-        ttk.Button(toolbar, text='🔍 Test reachability',
+        ttk.Button(toolbar, text='🔍 Проверить доступность',
                    command=self._vpngate_test_reach).pack(side='left', padx=(6, 0))
-        self.vpngate_status_var = tk.StringVar(value='Not loaded yet')
+        self.vpngate_status_var = tk.StringVar(value='Ещё не загружено')
         ttk.Label(toolbar, textvariable=self.vpngate_status_var, foreground='#555',
                   style='Status.TLabel').pack(side='left', padx=10)
 
         filt = ttk.Frame(f)
         filt.pack(fill='x', padx=4, pady=(0, 4))
-        ttk.Label(filt, text='Country:').pack(side='left')
-        self.vpngate_country_var = tk.StringVar(value='Any')
+        ttk.Label(filt, text='Страна:').pack(side='left')
+        self.vpngate_country_var = tk.StringVar(value='Любая')
         self.vpngate_country_combo = ttk.Combobox(filt,
             textvariable=self.vpngate_country_var,
             state='readonly', width=18)
         self.vpngate_country_combo.pack(side='left', padx=(4, 8))
         self.vpngate_country_combo.bind('<<ComboboxSelected>>',
             lambda e: self._vpngate_repaint())
-        ttk.Label(filt, text='Max ping:').pack(side='left')
+        ttk.Label(filt, text='Макс. пинг:').pack(side='left')
         self.vpngate_ping_var = tk.StringVar(value='1000')
         ttk.Entry(filt, textvariable=self.vpngate_ping_var, width=6
                   ).pack(side='left', padx=(4, 8))
-        ttk.Label(filt, text='Min Mbps:').pack(side='left')
+        ttk.Label(filt, text='Мин. Мбит/с:').pack(side='left')
         self.vpngate_speed_var = tk.StringVar(value='5')
         ttk.Entry(filt, textvariable=self.vpngate_speed_var, width=6
                   ).pack(side='left', padx=(4, 8))
         self.vpngate_nolog_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(filt, text='No-logs only',
+        ttk.Checkbutton(filt, text='Только «no logs»',
                         variable=self.vpngate_nolog_var,
                         command=self._vpngate_repaint
                         ).pack(side='left', padx=(0, 8))
-        ttk.Button(filt, text='Apply',
+        ttk.Button(filt, text='Применить фильтр',
                    command=self._vpngate_repaint).pack(side='left')
 
         tf = ttk.Frame(f)
@@ -1014,9 +1116,9 @@ class App(tk.Tk):
                 'uptime', 'sessions', 'log', 'op')
         self.vpngate_tree = ttk.Treeview(tf, columns=cols,
                                            show='headings', selectmode='browse')
-        headings = {'reach': 'Reach', 'country': 'Country', 'host': 'Hostname',
-                    'ip': 'IP', 'ping': 'Ping', 'mbps': 'Mbps', 'uptime': 'Up d',
-                    'sessions': 'Users', 'log': 'Log policy', 'op': 'Operator'}
+        headings = {'reach': 'Доступ', 'country': 'Страна', 'host': 'Хост',
+                    'ip': 'IP', 'ping': 'Пинг', 'mbps': 'Мбит/с', 'uptime': 'Дней',
+                    'sessions': 'Юзеров', 'log': 'Политика логов', 'op': 'Оператор'}
         widths = {'reach': 80, 'country': 75, 'host': 170, 'ip': 120,
                   'ping': 55, 'mbps': 65, 'uptime': 55, 'sessions': 55,
                   'log': 80, 'op': 190}
@@ -1034,11 +1136,11 @@ class App(tk.Tk):
 
         act = ttk.Frame(f)
         act.pack(fill='x', padx=4, pady=(0, 4))
-        ttk.Button(act, text='Copy host:port',
+        ttk.Button(act, text='Скопировать host:port',
                    command=self._vpngate_copy_host).pack(side='left')
-        ttk.Button(act, text='Copy creds (vpn/vpn)',
+        ttk.Button(act, text='Скопировать логин/пароль',
                    command=self._vpngate_copy_creds).pack(side='left', padx=(4, 0))
-        ttk.Button(act, text='▶ Create SSTP interface on router',
+        ttk.Button(act, text='▶ Создать SSTP-интерфейс на роутере',
                    command=self._vpngate_create_interface,
                    style='Accent.TButton').pack(side='right')
 
@@ -1054,12 +1156,12 @@ class App(tk.Tk):
             self._vpngate_repaint()
             age = CACHE.age('vpngate') or 0
             self.vpngate_status_var.set(
-                f'{len(cached_sv)} servers (cached, {int(age/60)} min old)')
+                f'{len(cached_sv)} серверов (из кеша, возраст {int(age/60)} мин)')
 
     def _vpngate_populate_country_filter(self):
         countries = sorted({s.get('CountryLong', '') for s in self.vpngate_all
                               if s.get('CountryLong')})
-        self.vpngate_country_combo.configure(values=['Any'] + countries)
+        self.vpngate_country_combo.configure(values=['Любая'] + countries)
 
     def _vpngate_repaint(self):
         self.vpngate_tree.delete(*self.vpngate_tree.get_children())
@@ -1071,7 +1173,7 @@ class App(tk.Tk):
         nolog = self.vpngate_nolog_var.get()
         out = []
         for s in self.vpngate_all:
-            if country and country != 'Any' and s.get('CountryLong') != country:
+            if country and country != 'Любая' and s.get('CountryLong') != country:
                 continue
             if s.get('Ping', 0) > max_ping:
                 continue
@@ -1107,7 +1209,7 @@ class App(tk.Tk):
                 reach = '—'; tag: tuple = ()
             else:
                 ok, rtt = r
-                reach = f'✓ {int(rtt)} ms' if ok else '✗ blocked'
+                reach = f'✓ {int(rtt)} мс' if ok else '✗ блок'
                 tag = ('reach_ok',) if ok else ('reach_bad',)
             self.vpngate_tree.insert('', 'end', iid=hn,
                 values=(reach,
@@ -1140,17 +1242,18 @@ class App(tk.Tk):
     def _vpngate_copy_host(self):
         s = self._vpngate_selected()
         if not s:
-            messagebox.showinfo(APP_NAME, 'Select a server in the table.'); return
+            messagebox.showinfo(APP_NAME, 'Выберите сервер в таблице.'); return
         text = f'{s.get("HostName")}:443'
         self.clipboard_clear(); self.clipboard_append(text)
-        self.log(f'Copied: {text}', 'ok')
+        self.log(f'Скопировано: {text}', 'ok')
 
     def _vpngate_copy_creds(self):
         self.clipboard_clear(); self.clipboard_append('vpn')
         messagebox.showinfo(APP_NAME,
-                             'Copied "vpn" as username. Click OK, then copy again for the password.')
+                             'Скопирован логин «vpn». Нажмите OK, затем нажмите кнопку ещё '
+                             'раз чтобы скопировать пароль.')
         self.clipboard_clear(); self.clipboard_append('vpn')
-        self.log('Copied VPN Gate creds (vpn/vpn)', 'ok')
+        self.log('Скопированы учётные данные VPN Gate (vpn/vpn)', 'ok')
 
     def _vpngate_create_interface(self):
         if not self._ensure_connected():
@@ -1158,11 +1261,11 @@ class App(tk.Tk):
         comps = self.client.router_info.get('components') or set()
         if comps and 'sstp' not in comps:
             messagebox.showerror(APP_NAME,
-                'SSTP client component is not installed on the router.')
+                'Компонент SSTP-клиент не установлен на роутере.')
             return
         s = self._vpngate_selected()
         if not s:
-            messagebox.showinfo(APP_NAME, 'Select a server in the table.')
+            messagebox.showinfo(APP_NAME, 'Выберите сервер в таблице.')
             return
         self._create_sstp_from_server(
             peer=s.get('HostName', ''),
@@ -1170,34 +1273,35 @@ class App(tk.Tk):
             label=f'{s.get("CountryShort", "?")} {s.get("HostName", "")}')
 
     def _on_vpngate_refresh(self):
-        self.vpngate_status_var.set('Fetching…')
+        self.vpngate_status_var.set('Загружаю…')
 
         def do():
             return fetch_vpngate(force=True)
 
         def done(result, err):
             if err is not None:
-                self.vpngate_status_var.set(f'Fetch failed: {err}')
-                self.log(f'VPN Gate fetch failed: {err}', 'err')
+                self.vpngate_status_var.set(f'Ошибка загрузки: {err}')
+                self.log(f'VPN Gate — ошибка загрузки: {err}', 'err')
                 return
             self.vpngate_all = result
             self.vpngate_reach_results = {}
             self._vpngate_populate_country_filter()
             self._vpngate_repaint()
             self.vpngate_status_var.set(
-                f'{len(result)} servers (fresh) · click "Test reachability" to '
-                'see which are actually reachable from your network')
-            self.log(f'VPN Gate: {len(result)} servers loaded.', 'ok')
+                f'{len(result)} серверов (свежий список) · нажмите «Проверить '
+                'доступность», чтобы увидеть какие из них действительно доступны')
+            self.log(f'VPN Gate: загружено {len(result)} серверов.', 'ok')
 
         self.worker.run(do, on_done=done)
 
     def _vpngate_test_reach(self):
         if not self.vpngate_all:
-            messagebox.showinfo(APP_NAME, 'Refresh the live list first.')
+            messagebox.showinfo(APP_NAME, 'Сначала обновите актуальный список.')
             return
         targets = list(self.vpngate_shown) or list(self.vpngate_all)
         self.vpngate_status_var.set(
-            f'Testing TCP reachability on {len(targets)} servers (parallel, up to 2s each)…')
+            f'Проверяю TCP-доступность на {len(targets)} серверах '
+            '(параллельно, до 2с на каждый)…')
         self.vpngate_reach_results = {}
         self._vpngate_repaint()
 
@@ -1215,7 +1319,7 @@ class App(tk.Tk):
 
         def done(result, err):
             if err is not None:
-                self.log(f'Reachability test failed: {err}', 'err')
+                self.log(f'Проверка доступности не удалась: {err}', 'err')
                 return
             results, dt, tested = result
             self.vpngate_reach_results = results
@@ -1224,9 +1328,9 @@ class App(tk.Tk):
             self._vpngate_repaint()
             ok_count = sum(1 for v in results.values() if v[0])
             self.vpngate_status_var.set(
-                f'{ok_count}/{tested} reachable · {dt:.1f}s · sorted by reach')
-            self.log(f'Live-list reachability: {ok_count}/{tested} reachable '
-                     f'({dt:.1f}s).', 'ok' if ok_count else 'warn')
+                f'{ok_count}/{tested} доступно · {dt:.1f} с · отсортировано по доступности')
+            self.log(f'Доступность в актуальном списке: {ok_count}/{tested} '
+                     f'({dt:.1f} с).', 'ok' if ok_count else 'warn')
 
         self.worker.run(do, on_done=done)
 
@@ -1245,59 +1349,59 @@ class App(tk.Tk):
         stats = ' · '.join(f'{CATEGORY_ICON.get(c, "📦")} {c}: {n}'
                             for c, n in sorted(by_cat.items()))
         ttk.Label(header,
-                  text=f'Version {self.catalog.version} · {len(self.catalog.services)} services',
+                  text=f'Версия {self.catalog.version} · {len(self.catalog.services)} сервисов',
                   foreground='#555').pack(anchor='w')
         ttk.Label(header, text=stats, foreground='#555').pack(anchor='w', pady=(2, 0))
 
         n_upstream = sum(1 for s in self.catalog.services
                          if s.get('upstream') or s.get('ipv4_providers') or s.get('asn'))
-        refresh_box = ttk.LabelFrame(f, text=' Upstream refresh ', padding=8)
+        refresh_box = ttk.LabelFrame(f, text=' Обновление из upstream ', padding=8)
         refresh_box.pack(fill='x', padx=8, pady=(10, 6))
         ttk.Label(refresh_box,
-                  text=f'{n_upstream} of {len(self.catalog.services)} services declare an upstream '
-                       'source (v2fly, Cloudflare, AWS, RIPEstat, etc.)').pack(anchor='w')
+                  text=f'{n_upstream} из {len(self.catalog.services)} сервисов объявляют upstream '
+                       '(v2fly, Cloudflare, AWS, RIPEstat и т.д.)').pack(anchor='w')
         ttk.Label(refresh_box,
-                  text='Pull fresh FQDN / IPv4 CIDR lists from upstream and merge into '
-                       'the in-memory catalog. Re-Apply after to push changes to the router.',
+                  text='Подтянуть свежие списки FQDN / IPv4 CIDR и объединить с локальным каталогом. '
+                       'После обновления — Применить, чтобы протолкнуть изменения на роутер.',
                   foreground='#555', wraplength=700, justify='left').pack(anchor='w', pady=(2, 6))
         row = ttk.Frame(refresh_box)
         row.pack(anchor='w')
-        ttk.Button(row, text='⟳  Refresh all upstream',
+        ttk.Button(row, text='⟳  Обновить все upstream',
                    command=self._on_refresh_upstream_all,
                    style='Accent.TButton').pack(side='left')
-        ttk.Button(row, text='Export current catalog to file…',
+        ttk.Button(row, text='Экспортировать каталог в файл…',
                    command=self._on_export_catalog).pack(side='left', padx=(8, 0))
 
-        cache_box = ttk.LabelFrame(f, text=' Disk cache ', padding=8)
+        cache_box = ttk.LabelFrame(f, text=' Дисковый кеш ', padding=8)
         cache_box.pack(fill='x', padx=8, pady=6)
         size_kb = CACHE.size_bytes() / 1024.0
         ttk.Label(cache_box,
-                  text=f'{CACHE.num_entries()} entries, {size_kb:.1f} KB at '
-                       f'{str(CACHE_FILE)}').pack(anchor='w')
+                  text=f'{CACHE.num_entries()} записей, {size_kb:.1f} КБ — {str(CACHE_FILE)}'
+                  ).pack(anchor='w')
         ttk.Label(cache_box,
-                  text='TTL: v2fly/plain-text 6h, IP providers 24h, RIPEstat 24h, '
-                       'VPN Gate 5 min. Refresh buttons ignore the cache.',
+                  text='TTL: v2fly и plain-text 6 ч, IP-провайдеры 24 ч, RIPEstat 24 ч, '
+                       'VPN Gate 5 мин. Кнопки Обновить игнорируют кеш.',
                   foreground='#555', wraplength=700, justify='left').pack(anchor='w', pady=(2, 6))
-        ttk.Button(cache_box, text='Clear cache',
+        ttk.Button(cache_box, text='Очистить кеш',
                    command=self._on_cache_clear).pack(anchor='w')
 
-        url_box = ttk.LabelFrame(f, text=' Import from URL ', padding=8)
+        url_box = ttk.LabelFrame(f, text=' Импорт с URL ', padding=8)
         url_box.pack(fill='x', padx=8, pady=6)
         self.url_var = tk.StringVar()
-        ttk.Label(url_box, text='URL to services.json (schema_version=1):'
+        ttk.Label(url_box, text='URL до services.json (schema_version=1):'
                   ).pack(anchor='w')
         row = ttk.Frame(url_box)
         row.pack(fill='x', pady=(4, 0))
         ttk.Entry(row, textvariable=self.url_var).pack(side='left', fill='x', expand=True)
-        ttk.Button(row, text='Import', command=self._on_import_url
+        ttk.Button(row, text='Импорт', command=self._on_import_url
                    ).pack(side='left', padx=(6, 0))
 
-        file_box = ttk.LabelFrame(f, text=' Import from file ', padding=8)
+        file_box = ttk.LabelFrame(f, text=' Импорт из файла ', padding=8)
         file_box.pack(fill='x', padx=8, pady=4)
-        ttk.Button(file_box, text='Load JSON file…',
+        ttk.Button(file_box, text='Выбрать JSON…',
                    command=self._on_import_file).pack(anchor='w')
 
-        schema_box = ttk.LabelFrame(f, text=' Schema reference ', padding=8)
+        schema_box = ttk.LabelFrame(f, text=' Схема JSON ', padding=8)
         schema_box.pack(fill='both', expand=True, padx=8, pady=(6, 8))
         schema_txt = (
             '{\n'
@@ -1383,14 +1487,23 @@ class App(tk.Tk):
                 f'{vendor} NDMS {v} · {len(self.interfaces)} interfaces · '
                 f'{len(self.state["groups"])} FQDN groups · '
                 f'{len(self.state["ip_routes"])} IP routes')
-            self._set_state(ConnState.CONNECTED, f'{self.iface_var.get() or "no iface"}')
-            self.log(f'Connected. Interface: {self.iface_var.get()}', 'ok')
+            self._set_state(ConnState.CONNECTED,
+                            f'{self.iface_var.get() or "нет интерфейса"}')
+            self.log(f'Подключено. Интерфейс: {self.iface_var.get()}', 'ok')
             self._populate_services()
             self._refresh_state_view()
             self._update_warnings()
             self.ui_cfg['last_host'] = host
             self.ui_cfg['last_user'] = user
             save_ui_config(self.ui_cfg)
+            # First-run redirect: if there are no VPN-client interfaces at all,
+            # jump to the VPN Gate bootstrap tab — that's the onboarding path.
+            if not any(i.get('type') in ('SSTP', 'L2TP', 'OpenVPN', 'Wireguard', 'PPTP')
+                       for i in self.interfaces):
+                try:
+                    self.nb.select(self.tab_vpngate)
+                except Exception:
+                    pass
 
         self.worker.run(connect_and_probe, on_done=done)
 
@@ -1418,9 +1531,10 @@ class App(tk.Tk):
             comps = self.client.router_info.get('components') or set()
             if comps and 'sstp' not in comps:
                 warns.append(
-                    '⚠  SSTP client component is NOT installed on the router. '
-                    'You will not be able to create/use SSTP interfaces until it is installed. '
-                    'Open the router web UI → System settings → Components → enable "SSTP client", apply and reboot.')
+                    '⚠  На роутере НЕ установлен компонент «SSTP-клиент». '
+                    'Создавать/использовать SSTP-интерфейсы не получится. '
+                    'В веб-UI: Настройки системы → Компоненты → включить '
+                    '«SSTP-клиент», применить, перезагрузить.')
             iface_name = self.iface_var.get().strip()
             if iface_name:
                 st = next((i for i in self.interfaces if i.get('name') == iface_name), {})
@@ -1431,17 +1545,16 @@ class App(tk.Tk):
                     if st.get('link'):      bits.append(f'link={st["link"]}')
                     if st.get('connected'): bits.append(f'connected={st["connected"]}')
                     warns.append(
-                        f'⚠  Selected interface "{iface_name}" is DOWN '
-                        f'({", ".join(bits) or "no status"}). With kill switch enabled, '
-                        'traffic to protected services will be dropped until the '
-                        'interface comes back up.')
+                        f'⚠  Выбранный интерфейс «{iface_name}» НЕ активен '
+                        f'({", ".join(bits) or "нет данных"}). При включённом kill switch '
+                        'трафик к защищённым сервисам будет дропаться, пока '
+                        'интерфейс не поднимется.')
         if self.client and not any(i.get('type') in
                                    ('SSTP', 'L2TP', 'OpenVPN', 'Wireguard', 'PPTP')
                                    for i in self.interfaces):
             warns.append(
-                'ℹ  No VPN-client interfaces found on the router. To get started '
-                'with zero-config routing, open the "VPN Gate" tab and use a '
-                'bootstrap server.')
+                'ℹ  На роутере нет ни одного VPN-клиента. Откройте вкладку VPN Gate → '
+                'Встроенные серверы и создайте первый SSTP-интерфейс.')
         if warns:
             self.warn_label.configure(text='\n\n'.join(warns))
             self.warn_frame.pack(fill='x', padx=8, pady=(0, 4),
@@ -1453,23 +1566,26 @@ class App(tk.Tk):
         cls = type(err).__name__
         msg = str(err)
         if isinstance(err, PermissionError):
-            human = f'Login failed — check user/password.\n\n{msg}'
+            human = (f'Ошибка логина — проверьте логин и пароль.\n\n{msg}')
         elif isinstance(err, socket.timeout) or 'timed out' in msg.lower():
-            human = f'Timed out connecting to router. Is it reachable on the network?'
+            human = ('Таймаут подключения к роутеру. '
+                     'Роутер доступен по сети? Правильный IP?')
         elif isinstance(err, ConnectionRefusedError):
-            human = 'Connection refused. Is telnet (port 23) enabled on the router?'
+            human = ('Соединение отклонено. '
+                     'Включён ли Telnet (порт 23) на роутере?\n'
+                     'Веб-UI → Настройки системы → Компоненты → Telnet.')
         elif isinstance(err, socket.gaierror):
-            human = f'Cannot resolve host "{self.host_var.get()}".'
+            human = f'Не удаётся разрешить имя «{self.host_var.get()}».'
         elif isinstance(err, ConnectionError):
-            human = f'Protocol error: {msg}'
+            human = f'Ошибка протокола: {msg}'
         else:
             human = f'{cls}: {msg}'
-        self.log(f'Connect failed: {human}', 'err')
+        self.log(f'Не подключено: {human}', 'err')
         messagebox.showerror(APP_NAME, human)
 
     def _ensure_connected(self) -> bool:
         if self.client is None or self.conn_state != ConnState.CONNECTED:
-            messagebox.showwarning(APP_NAME, 'Connect to the router first.')
+            messagebox.showwarning(APP_NAME, 'Сначала подключитесь к роутеру.')
             return False
         return True
 
@@ -1502,17 +1618,17 @@ class App(tk.Tk):
 
         if not plan['create'] and not plan['update']:
             messagebox.showinfo(APP_NAME,
-                f'All {len(plan["skip"])} selected service(s) are already up-to-date. '
-                'Nothing to apply.')
+                f'Все {len(plan["skip"])} выбранных сервис(ов) уже актуальны. '
+                'Нечего применять.')
             return
 
         summary = [
-            f'Apply plan via {iface}',
-            f'Kill switch: {"ON" if exclusive else "off"}', '',
-            fmt(plan['create'], f'CREATE  ({len(plan["create"])})'),
-            fmt(plan['update'], f'UPDATE  ({len(plan["update"])})'),
-            fmt(plan['skip'],   f'SKIP    ({len(plan["skip"])} already up-to-date)'),
-            'Proceed?']
+            f'План применения через {iface}',
+            f'Kill switch: {"ВКЛ" if exclusive else "выкл"}', '',
+            fmt(plan['create'], f'СОЗДАТЬ   ({len(plan["create"])})'),
+            fmt(plan['update'], f'ОБНОВИТЬ  ({len(plan["update"])})'),
+            fmt(plan['skip'],   f'ПРОПУСТИТЬ ({len(plan["skip"])} уже актуально)'),
+            'Применить?']
         if not messagebox.askyesno(APP_NAME, '\n'.join(x for x in summary if x)):
             return
 
@@ -1564,17 +1680,22 @@ class App(tk.Tk):
 
         def done(result, err):
             if err is not None:
-                self.log(f'Apply failed: {err}', 'err')
+                self.log(f'Применение не удалось: {err}', 'err')
                 messagebox.showerror(APP_NAME, str(err))
                 return
             touched, total_inc, migrated, cfg = result
             self.state = parse_running_config(cfg)
             self._refresh_state_view()
             self._populate_services()
-            extra = f', {migrated} legacy ip route(s) migrated' if migrated else ''
+            extra = f', мигрировано {migrated} legacy ip route' if migrated else ''
             self.log(
-                f'Applied {touched} service(s): {total_inc} includes (FQDN+IPv4)'
-                f'{extra}. Config saved.', 'ok')
+                f'Применено {touched} сервис(ов): {total_inc} записей (FQDN+IPv4)'
+                f'{extra}. Конфиг сохранён.', 'ok')
+            # Switch to Current state so the user sees what actually landed.
+            try:
+                self.nb.select(self.tab_state)
+            except Exception:
+                pass
 
         self.worker.run(do_apply, on_done=done)
 

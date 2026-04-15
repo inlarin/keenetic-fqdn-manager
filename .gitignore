@@ -24,3 +24,6 @@ Thumbs.db
 
 # Local UI config
 ui.json
+
+# Disk cache created next to the exe/source at runtime
+cache/

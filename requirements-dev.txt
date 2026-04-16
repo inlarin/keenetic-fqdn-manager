@@ -1,2 +1,10 @@
-pytest>=7.0
-pyinstaller>=6.0
+# Test + build dependencies for kn_gui.
+# Runtime has no dependencies — app.py uses only stdlib (tkinter, urllib, etc).
+
+# pytest 8 is a major breaking change from 7; pin an upper bound to avoid
+# surprise CI failures on new releases.
+pytest>=7.0,<9.0
+
+# pyinstaller: pinned to known-good series. 7.x had a number of Python 3.13
+# regressions; stay on 6.x until the dust settles.
+pyinstaller>=6.0,<7.0

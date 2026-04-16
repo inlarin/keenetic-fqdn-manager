@@ -80,6 +80,32 @@ def fetch_fastly(force: bool = False) -> list[str]:
     return cached('fastly', TTL_IP_PROVIDER, produce, force)
 
 
+def fetch_telegram(force: bool = False) -> list[str]:
+    """Telegram publishes its IPv4 subnets at /resources/cidr.txt.
+
+    Format: one CIDR per line, blank lines and `#` comments allowed.
+    Historically this endpoint is sometimes filtered from certain regions;
+    when the fetch fails the caller just doesn't get a refresh and keeps
+    using the last cached value. There is no secondary mirror that's
+    authoritative, so don't add a fallback here.
+    """
+    def produce():
+        text = _http_get('https://core.telegram.org/resources/cidr.txt')
+        out: set[str] = set()
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            # tolerate trailing comments on a data line
+            if '#' in line:
+                line = line.split('#', 1)[0].strip()
+            # IPv4 CIDRs only (IPv6 entries contain ':')
+            if '/' in line and ':' not in line:
+                out.add(line)
+        return sorted(out)
+    return cached('telegram', TTL_IP_PROVIDER, produce, force)
+
+
 def fetch_aws_service(service_tag: str, force: bool = False) -> list[str]:
     def produce():
         data = json.loads(_http_get('https://ip-ranges.amazonaws.com/ip-ranges.json'))

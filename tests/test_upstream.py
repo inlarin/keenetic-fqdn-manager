@@ -89,3 +89,29 @@ def test_github_meta_filters_ipv4_cidrs(monkeypatch):
     }))
     out = upstream.fetch_github_meta(force=True)
     assert out == ['140.82.112.0/20', '192.30.252.0/22']
+
+
+# ─── fetch_telegram ──────────────────────────────────────────────────────────
+
+def test_telegram_parses_cidr_list(monkeypatch):
+    body = (
+        '# Telegram IPv4 CIDRs\n'
+        '# generated at 2026-04-16\n'
+        '91.108.4.0/22\n'
+        '91.108.8.0/22\n'
+        '\n'
+        '149.154.160.0/20  # trailing comment\n'
+        '2001:67c:4e8::/48\n'   # IPv6 must be skipped
+        'not-a-cidr\n'          # malformed must be skipped
+    )
+    _monkey_http(monkeypatch, body)
+    out = upstream.fetch_telegram(force=True)
+    assert out == ['149.154.160.0/20', '91.108.4.0/22', '91.108.8.0/22']
+
+
+def test_telegram_cache_hit(monkeypatch):
+    _monkey_http(monkeypatch, '91.108.4.0/22\n')
+    a = upstream.fetch_telegram(force=True)
+    _monkey_http(monkeypatch, '1.2.3.0/24\n')
+    b = upstream.fetch_telegram(force=False)
+    assert a == b == ['91.108.4.0/22']

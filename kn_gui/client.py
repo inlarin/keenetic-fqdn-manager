@@ -63,7 +63,8 @@ class KeeneticClient:
     def _read_until_any(self, patterns: list[str], timeout: float = 8.0) -> tuple[str, int]:
         """Match regex against ANSI-stripped text.
         Returns (text_so_far, matched_index or -1)."""
-        assert self.sock is not None
+        if self.sock is None:
+            raise RuntimeError('KeeneticClient: socket is closed (call login() first)')
         self.sock.settimeout(0.3)
         buf = b''
         end = time.time() + timeout
@@ -96,7 +97,8 @@ class KeeneticClient:
         return text
 
     def _send(self, line: str) -> None:
-        assert self.sock is not None
+        if self.sock is None:
+            raise RuntimeError('KeeneticClient: socket is closed (call login() first)')
         self.sock.sendall((line + '\n').encode())
 
     # ── Auth + lifecycle ──────────────────────────────────────────────────

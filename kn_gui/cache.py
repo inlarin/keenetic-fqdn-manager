@@ -1,7 +1,14 @@
-"""Single-file JSON cache with per-entry TTL. One writer at a time via a Lock."""
+"""Single-file JSON cache with per-entry TTL. One writer at a time via a Lock.
+
+Writes go through a tempfile + os.replace pattern so that a crash or a
+concurrent copy of the same app doesn't leave a half-written JSON file
+on disk (which _load would then treat as "no cache" and silently re-fetch
+every source)."""
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -26,10 +33,42 @@ class DiskCache:
             self.data = {'version': 1, 'entries': {}}
 
     def _save(self) -> None:
+        """Atomic write: dump to a sibling temp file, fsync, then os.replace.
+
+        os.replace() is atomic on the same filesystem on both POSIX and
+        Windows, so readers will always see either the old complete file
+        or the new complete file — never a truncated/corrupt JSON.
+        """
         try:
-            self.path.write_text(
-                json.dumps(self.data, ensure_ascii=False, indent=2),
-                encoding='utf-8')
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(
+                self.data, ensure_ascii=False, indent=2,
+            ).encode('utf-8')
+            # NamedTemporaryFile on Windows cannot be opened twice, so we
+            # create + close it manually instead.
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=self.path.name + '.',
+                suffix='.tmp',
+                dir=str(self.path.parent),
+            )
+            try:
+                with os.fdopen(fd, 'wb') as f:
+                    f.write(payload)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except (AttributeError, OSError):
+                        # Some filesystems / platforms (tmpfs, ramdisk) don't
+                        # support fsync — non-fatal.
+                        pass
+                os.replace(tmp_path, self.path)
+            except Exception:
+                # Best-effort cleanup of the tempfile if os.replace didn't happen.
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception:
             # A full disk or permission error should not crash the app;
             # next access will simply see no cache hit and re-fetch.

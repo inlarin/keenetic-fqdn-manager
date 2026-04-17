@@ -215,67 +215,17 @@ class KeeneticRCIClient:
         return {}
 
     # ── FQDN object-group + dns-proxy route ───────────────────────────────
+    # All FQDN group ops delegate to the transport-agnostic helper in
+    # kn_gui._fqdn_group_ops so there's one place to evolve behaviour
+    # (validation, auto-split, tagging). Previously each transport
+    # duplicated ~70 lines of identical logic.
 
     def create_fqdn_group(self, name: str, entries: list[str],
                           description: str = '') -> tuple[list[str], list[str]]:
-        """Create FQDN group(s) via /rci/parse. Same API as Telnet version."""
-        errs: list[str] = []
-        created: list[str] = []
-
-        name_err = validate_group_name(name)
-        if name_err:
-            errs.append(f'group name: {name_err}')
-            return created, errs
-
-        valid, warnings, invalid = validate_fqdns(entries)
-        errs.extend(warnings)
-        errs.extend(invalid)
-
-        if not valid:
-            errs.append('no valid entries to include')
-            return created, errs
-
-        # Split into chunks.
-        chunks: list[tuple[str, list[str]]] = []
-        if len(valid) <= MAX_ENTRIES_PER_GROUP:
-            chunks.append((name, valid))
-        else:
-            for i in range(0, len(valid), MAX_ENTRIES_PER_GROUP):
-                chunk = valid[i:i + MAX_ENTRIES_PER_GROUP]
-                suffix = '' if i == 0 else f'_{i // MAX_ENTRIES_PER_GROUP + 1}'
-                chunk_name = f'{name}{suffix}'
-                if validate_group_name(chunk_name):
-                    max_base = 32 - len(suffix)
-                    chunk_name = f'{name[:max_base]}{suffix}'
-                chunks.append((chunk_name, chunk))
-            if len(chunks) > 1:
-                errs.append(
-                    f'split {len(valid)} entries into {len(chunks)} groups '
-                    f'(Keenetic limit ~{MAX_ENTRIES_PER_GROUP}/group): '
-                    + ', '.join(f'{n}({len(e)})' for n, e in chunks))
-
-        from .constants import MANAGED_INTERFACE_TAG
-        tagged_desc = (f'{MANAGED_INTERFACE_TAG} {description}'.strip()
-                        if description else MANAGED_INTERFACE_TAG)
-
-        for chunk_name, chunk_entries in chunks:
-            try:
-                self.run_expect(f'object-group fqdn {chunk_name}')
-                safe = _sanitize_cli_value(tagged_desc).replace('"', '').strip()
-                if safe:
-                    try:
-                        self.run_expect(f'description "{safe}"')
-                    except RuntimeError as e:
-                        errs.append(f'{chunk_name} description: {e}')
-                for entry in chunk_entries:
-                    try:
-                        self.run_expect(f'include {entry}')
-                    except RuntimeError as e:
-                        errs.append(f'include {entry}: {e}')
-                created.append(chunk_name)
-            finally:
-                self.run('exit')
-        return created, errs
+        from . import _fqdn_group_ops
+        return _fqdn_group_ops.create_fqdn_group(
+            name, entries, description,
+            run_expect=self.run_expect, run=self.run)
 
     def bind_fqdn_route(self, group: str, interface: str, auto: bool = True,
                         reject: bool = False) -> str:
@@ -287,13 +237,8 @@ class KeeneticRCIClient:
         return self.run_expect(' '.join(parts))
 
     def delete_fqdn_group(self, name: str) -> None:
-        """Delete group + speculatively remove auto-split siblings up to _50."""
-        self.run(f'no dns-proxy route object-group {name}')
-        self.run(f'no object-group fqdn {name}')
-        for i in range(2, 51):
-            sib = f'{name}_{i}'
-            self.run(f'no dns-proxy route object-group {sib}')
-            self.run(f'no object-group fqdn {sib}')
+        from . import _fqdn_group_ops
+        _fqdn_group_ops.delete_fqdn_group(name, run=self.run)
 
     def add_ip_route(self, network: str, mask: str, interface: str,
                      auto: bool = True, reject: bool = False) -> str:
@@ -311,24 +256,8 @@ class KeeneticRCIClient:
         return self.run_expect('system configuration save', timeout=15.0)
 
     def list_managed_fqdn_groups(self) -> list[dict]:
-        """Return FQDN groups tagged with MANAGED_INTERFACE_TAG.
-
-        Identical semantics to the Telnet client's implementation — see
-        `client.KeeneticClient.list_managed_fqdn_groups`.
-        """
-        from .constants import MANAGED_INTERFACE_TAG
-        from .state import parse_running_config
-        cfg = self.running_config()
-        parsed = parse_running_config(cfg)
-        out: list[dict] = []
-        for name, desc in parsed.get('group_descriptions', {}).items():
-            if MANAGED_INTERFACE_TAG in desc:
-                out.append({
-                    'name': name,
-                    'description': desc,
-                    'entries': parsed['groups'].get(name, []),
-                })
-        return out
+        from . import _fqdn_group_ops
+        return _fqdn_group_ops.list_managed_fqdn_groups(self.running_config)
 
     # ── SSTP interface provisioning ───────────────────────────────────────
 

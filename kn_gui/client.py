@@ -232,87 +232,17 @@ class KeeneticClient:
     # ── FQDN object-group + dns-proxy route ───────────────────────────────
     def create_fqdn_group(self, name: str, entries: list[str],
                           description: str = '') -> tuple[list[str], list[str]]:
-        """Create (or update) an object-group fqdn and `include` each entry.
+        """Delegate to the transport-agnostic implementation.
 
-        Validation:
-        - Group name is checked against Keenetic's 32-char regex.
-        - Entries are normalized (wildcards stripped) and validated.
-        - Invalid FQDNs are skipped (returned in errs).
-        - If entries exceed MAX_ENTRIES_PER_GROUP (~300), the list is split
-          into chunks and additional groups `<name>_2`, `<name>_3` are
-          created automatically.
-
-        Returns (created_group_names, warnings_and_errors).
-        `created_group_names` is the list of all group names that were
-        actually created on the router — the caller MUST bind each one
-        via `bind_fqdn_route` so that split-parts don't leak traffic.
+        See `kn_gui._fqdn_group_ops.create_fqdn_group` for behaviour
+        details (validation, auto-split, tag prefix, etc.). Keeping the
+        top-level signature on the client makes the Telnet and RCI
+        transports drop-in compatible.
         """
-        errs: list[str] = []
-        created: list[str] = []
-
-        # ── Validate group name ────────────────────────────────────────
-        name_err = validate_group_name(name)
-        if name_err:
-            errs.append(f'group name: {name_err}')
-            return created, errs
-
-        # ── Validate + normalize entries ───────────────────────────────
-        valid, warnings, invalid = validate_fqdns(entries)
-        errs.extend(warnings)
-        errs.extend(invalid)
-
-        if not valid:
-            errs.append('no valid entries to include')
-            return created, errs
-
-        # ── Split into chunks ≤MAX_ENTRIES_PER_GROUP ───────────────────
-        chunks: list[tuple[str, list[str]]] = []
-        if len(valid) <= MAX_ENTRIES_PER_GROUP:
-            chunks.append((name, valid))
-        else:
-            # name, name_2, name_3, ...
-            for i in range(0, len(valid), MAX_ENTRIES_PER_GROUP):
-                chunk = valid[i:i + MAX_ENTRIES_PER_GROUP]
-                suffix = '' if i == 0 else f'_{i // MAX_ENTRIES_PER_GROUP + 1}'
-                chunk_name = f'{name}{suffix}'
-                # Validate derived name too (might exceed 32 chars)
-                if validate_group_name(chunk_name):
-                    # Name too long after suffix — truncate base
-                    max_base = 32 - len(suffix)
-                    chunk_name = f'{name[:max_base]}{suffix}'
-                chunks.append((chunk_name, chunk))
-            if len(chunks) > 1:
-                errs.append(
-                    f'split {len(valid)} entries into {len(chunks)} groups '
-                    f'(Keenetic limit ~{MAX_ENTRIES_PER_GROUP}/group): '
-                    + ', '.join(f'{n}({len(e)})' for n, e in chunks))
-
-        # Tag the description so list_managed_fqdn_groups() can later
-        # pick out groups we created vs. user-configured ones.
-        from .constants import MANAGED_INTERFACE_TAG
-        tagged_desc = (f'{MANAGED_INTERFACE_TAG} {description}'.strip()
-                        if description else MANAGED_INTERFACE_TAG)
-
-        # ── Push each chunk to the router ──────────────────────────────
-        for chunk_name, chunk_entries in chunks:
-            try:
-                self.run_expect(f'object-group fqdn {chunk_name}')
-                safe = _sanitize_cli_value(tagged_desc).replace('"', '').strip()
-                if safe:
-                    try:
-                        self.run_expect(f'description "{safe}"')
-                    except RuntimeError as e:
-                        errs.append(f'{chunk_name} description: {e}')
-                for entry in chunk_entries:
-                    try:
-                        self.run_expect(f'include {entry}')
-                    except RuntimeError as e:
-                        errs.append(f'include {entry}: {e}')
-                created.append(chunk_name)
-            finally:
-                # Always leave the object-group context even on error.
-                self.run('exit')
-        return created, errs
+        from . import _fqdn_group_ops
+        return _fqdn_group_ops.create_fqdn_group(
+            name, entries, description,
+            run_expect=self.run_expect, run=self.run)
 
     def bind_fqdn_route(self, group: str, interface: str, auto: bool = True,
                         reject: bool = False) -> str:
@@ -322,22 +252,8 @@ class KeeneticClient:
         return self.run_expect(' '.join(parts))
 
     def delete_fqdn_group(self, name: str) -> None:
-        """Delete the FQDN group and its dns-proxy route.
-
-        Also deletes any auto-split siblings (`name_2`, `name_3`, …) so
-        that Apply→Delete→Re-apply doesn't leave orphan split-groups on
-        the router. The range covers up to _50 — enough for ~15 000
-        FQDN entries, well past any realistic service catalog; larger
-        lists would hit the router's global limits first.
-        """
-        self.run(f'no dns-proxy route object-group {name}')
-        self.run(f'no object-group fqdn {name}')
-        # Speculatively delete: `no object-group fqdn <nonexistent>` is
-        # a no-op (warning, not error) on NDMS 5.x.
-        for i in range(2, 51):
-            sib = f'{name}_{i}'
-            self.run(f'no dns-proxy route object-group {sib}')
-            self.run(f'no object-group fqdn {sib}')
+        from . import _fqdn_group_ops
+        _fqdn_group_ops.delete_fqdn_group(name, run=self.run)
 
     def add_ip_route(self, network: str, mask: str, interface: str,
                      auto: bool = True, reject: bool = False) -> str:
@@ -353,25 +269,8 @@ class KeeneticClient:
         return self.run_expect('system configuration save', timeout=15.0)
 
     def list_managed_fqdn_groups(self) -> list[dict]:
-        """Return FQDN groups whose description carries MANAGED_INTERFACE_TAG.
-
-        Each entry: {'name': str, 'description': str, 'entries': list[str]}.
-        Used by the UI to offer a one-click cleanup of groups this app
-        created without touching user-configured ones.
-        """
-        from .constants import MANAGED_INTERFACE_TAG
-        from .state import parse_running_config
-        cfg = self.running_config()
-        parsed = parse_running_config(cfg)
-        out: list[dict] = []
-        for name, desc in parsed.get('group_descriptions', {}).items():
-            if MANAGED_INTERFACE_TAG in desc:
-                out.append({
-                    'name': name,
-                    'description': desc,
-                    'entries': parsed['groups'].get(name, []),
-                })
-        return out
+        from . import _fqdn_group_ops
+        return _fqdn_group_ops.list_managed_fqdn_groups(self.running_config)
 
     # ── SSTP interface provisioning ───────────────────────────────────────
     def find_free_sstp_index(self, existing: list[str]) -> int:

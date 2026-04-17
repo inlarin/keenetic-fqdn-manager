@@ -229,3 +229,80 @@ def test_show_interface_returns_empty_dict_on_404(rci):
 
     _install_opener(rci, responder)
     assert rci.show_interface('Nowhere') == {}
+
+
+def test_show_running_config_falls_back_to_parse_when_native_is_json(rci):
+    """Regression: when /rci/show/running-config returns a structured
+    JSON dict instead of a text dump, we MUST fall back to /rci/parse
+    to get the CLI-format text. Otherwise parse_running_config() sees
+    no `object-group fqdn` lines and the UI shows "no applied services"
+    on a router that clearly has them.
+    """
+    rci._authed = True
+
+    def responder(req):
+        url = req.full_url
+        if 'rci/parse' in url:
+            # parse() returns { parse, prompt, status: [ { message: ... } ] }
+            body = json.dumps({
+                'parse': 'show running-config',
+                'prompt': '(config)>',
+                'status': [
+                    {'message': 'object-group fqdn telegram'},
+                    {'message': '    include t.me'},
+                    {'message': '!'},
+                ],
+            }).encode()
+            return FakeResponse(200, body)
+        if 'running-config' in url or 'configuration' in url:
+            # Native endpoint returns a raw JSON tree without text.
+            body = json.dumps({'interfaces': {'PPPoE0': {}}}).encode()
+            return FakeResponse(200, body)
+        raise AssertionError(f'unexpected URL {url}')
+
+    _install_opener(rci, responder)
+    text = rci.show_running_config()
+    assert 'object-group fqdn telegram' in text, (
+        'running_config must return CLI text, not a JSON dump — '
+        'otherwise the running-config parser sees nothing')
+    assert 'include t.me' in text
+
+
+def test_extract_parse_text_joins_status_messages():
+    from kn_gui.rci_client import _extract_parse_text
+    resp = {
+        'parse': 'show x',
+        'prompt': '(config)>',
+        'status': [
+            {'message': 'line 1', 'code': 0},
+            {'text': 'line 2'},
+            {'code': 0},  # no message
+            {'message': 'line 3'},
+        ],
+    }
+    text = _extract_parse_text(resp)
+    assert text == 'line 1\nline 2\nline 3'
+
+
+def test_extract_parse_text_handles_empty_status():
+    from kn_gui.rci_client import _extract_parse_text
+    # When status is empty but parse echo has content, fall back to it.
+    resp = {'parse': '! some text', 'prompt': '(config)>', 'status': []}
+    assert _extract_parse_text(resp) == '! some text'
+    # When both are empty, return ''.
+    assert _extract_parse_text({'parse': '', 'status': []}) == ''
+    assert _extract_parse_text(None) == ''
+
+
+def test_looks_like_cli_text():
+    from kn_gui.rci_client import _looks_like_cli_text
+    # CLI text — accepted.
+    assert _looks_like_cli_text('! Keenetic config\ninterface PPPoE0\n')
+    assert _looks_like_cli_text('object-group fqdn x\n')
+    assert _looks_like_cli_text('    indented text')
+    # JSON — rejected.
+    assert not _looks_like_cli_text('{"message": "..."}')
+    assert not _looks_like_cli_text('[{"x":1}]')
+    # Empty — rejected.
+    assert not _looks_like_cli_text('')
+    assert not _looks_like_cli_text('   ')

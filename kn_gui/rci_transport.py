@@ -33,6 +33,34 @@ def _sanitize_cli_value(s: str) -> str:
     return s.replace('\n', ' ').replace('\r', '').replace('\x00', '')
 
 
+def _parse_interfaces_text(text: str) -> list[dict]:
+    """Parse `show interface` CLI output into a list of dicts.
+
+    Mirrors the parser in `client.KeeneticClient.list_interfaces()` so
+    that RCI and Telnet paths produce the exact same structure.
+    """
+    allowed_types = KeeneticRCIClient.IFACE_TYPES
+    ifaces: list[dict] = []
+    current: dict = {}
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith('interface-name:'):
+            if current.get('name'):
+                ifaces.append(current)
+            current = {'name': s.split(':', 1)[1].strip()}
+        elif s.startswith('type:'):
+            current['type'] = s.split(':', 1)[1].strip()
+        elif s.startswith('description:'):
+            current['description'] = s.split(':', 1)[1].strip()
+        elif s.startswith('link:'):
+            current['link'] = s.split(':', 1)[1].strip()
+        elif s.startswith('connected:'):
+            current['connected'] = s.split(':', 1)[1].strip()
+    if current.get('name'):
+        ifaces.append(current)
+    return [i for i in ifaces if i.get('type') in allowed_types]
+
+
 class KeeneticRCIClient:
     """RCI-based Keenetic client with the same public API as KeeneticClient.
 
@@ -136,7 +164,14 @@ class KeeneticRCIClient:
     # ── Introspection ─────────────────────────────────────────────────────
 
     def list_interfaces(self) -> list[dict]:
-        """List router interfaces as dicts (same shape as Telnet version)."""
+        """List router interfaces as dicts (same shape as Telnet version).
+
+        Prefers the native `/rci/show/interface` JSON (fast) but falls
+        back to parsing `show interface` text output if the JSON shape
+        is unexpected — this keeps behaviour identical to the Telnet
+        path and avoids surprises on firmware versions that format the
+        JSON differently.
+        """
         data = self._rci.show_interfaces()
         result: list[dict] = []
         for iface in data:
@@ -144,13 +179,17 @@ class KeeneticRCIClient:
             if itype not in self.IFACE_TYPES:
                 continue
             result.append({
-                'name': iface.get('name', ''),
+                'name': iface.get('name', '') or iface.get('interface-name', ''),
                 'type': itype,
                 'description': iface.get('description', ''),
                 'link': iface.get('link', ''),
                 'connected': iface.get('connected', ''),
             })
-        return result
+        if result:
+            return result
+        # Fallback: parse-based. Same parser as Telnet used.
+        text, _ = self.run('show interface', timeout=15.0)
+        return _parse_interfaces_text(text)
 
     def running_config(self) -> str:
         text = self._rci.show_running_config()

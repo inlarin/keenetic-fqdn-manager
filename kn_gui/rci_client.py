@@ -38,6 +38,43 @@ from typing import Any, Optional
 from .constants import APP_NAME, APP_VERSION, MAX_HTTP_BYTES
 
 
+def _extract_parse_text(resp) -> str:
+    """Pull CLI text out of a `/rci/parse` response.
+
+    The shape is `{"parse": "<echoed command>", "prompt": "(config)>",
+    "status": [{"message": "line 1", "code": 0}, ...]}`. We concatenate
+    all non-empty 'message' / 'text' fields to reconstruct the CLI output
+    the router would have produced over Telnet.
+    """
+    if not isinstance(resp, dict):
+        return ''
+    chunks: list[str] = []
+    for item in resp.get('status', []) or []:
+        if isinstance(item, dict):
+            msg = item.get('message') or item.get('text') or ''
+            if msg:
+                chunks.append(str(msg))
+    # Keep the raw `parse` echo too — some firmware versions put the
+    # output there instead of in status[].
+    parse_echo = resp.get('parse')
+    if isinstance(parse_echo, str) and parse_echo.strip() and not chunks:
+        chunks.append(parse_echo)
+    return '\n'.join(chunks)
+
+
+def _looks_like_cli_text(text: str) -> bool:
+    """Heuristic: does `text` look like a Keenetic CLI dump?
+
+    A structured JSON blob (dict → JSON) would start with `{` or `[`;
+    anything else — `!` comments, `interface …` stanzas, raw output —
+    is treated as CLI text. Non-empty required.
+    """
+    if not text or not text.strip():
+        return False
+    head = text.strip()[:2]
+    return not head.startswith(('{', '['))
+
+
 class RCIAuthError(RuntimeError):
     """Raised when /auth handshake fails (wrong creds, missing realm, etc.)."""
 
@@ -298,24 +335,36 @@ class RCIClient:
         return self.get(f'show/interface/{name}') or {}
 
     def show_running_config(self) -> str:
-        """Raw running-config text (RCI returns a 'message' field with the
-        textual dump for this command)."""
-        # NDMS 5.x exposes the text at either 'show/running-config' or as
-        # part of 'show/configuration' depending on component set. Try both.
+        """Raw running-config text in Keenetic CLI format.
+
+        The native `/rci/show/running-config` endpoint sometimes returns a
+        structured JSON tree instead of the textual dump, in which case
+        the CLI parser downstream (`parse_running_config` that hunts for
+        `object-group fqdn X` + `include Y` lines) sees nothing and the
+        UI shows "no applied services" on a router that clearly has them.
+
+        Strategy: try native text first (fast path); if it looks empty
+        or JSON-shaped, fall back to `/rci/parse "show running-config"`
+        which is guaranteed to return the CLI text format identical to
+        what Telnet produced.
+        """
+        # 1. Try native endpoints — fast when they yield a text blob.
         for path in ('show/running-config', 'show/configuration'):
             data = self.get(path)
             if data is None:
                 continue
-            # Shape varies: sometimes {'message': '...'}, sometimes raw dict.
+            if isinstance(data, str) and _looks_like_cli_text(data):
+                return data
             if isinstance(data, dict):
                 msg = data.get('message')
-                if isinstance(msg, str):
+                if isinstance(msg, str) and _looks_like_cli_text(msg):
                     return msg
-                # Fall back to JSON text rendering if no 'message' field.
-                return json.dumps(data, indent=2)
-            if isinstance(data, str):
-                return data
-        return ''
+        # 2. Fallback: parse-based — always returns CLI text.
+        try:
+            resp = self.parse('show running-config')
+        except Exception:
+            return ''
+        return _extract_parse_text(resp)
 
     def show_system(self) -> dict:
         """System snapshot: uptime, cpuload, memory."""

@@ -26,6 +26,8 @@ from typing import Callable, Optional
 from .cache import CACHE
 from .catalog import Catalog
 from .client import KeeneticClient
+from .rci_client import RCIClient
+from .rci_transport import KeeneticRCIClient
 from .constants import (APP_NAME, APP_VERSION, CATEGORY_ICON, ConnState,
                         DEFAULT_ROUTER, DEFAULT_USER, GROUP_NAME_RE,
                         IID_BOOT, IID_CATEGORY, IID_GROUP, IID_IPROUTE,
@@ -979,15 +981,32 @@ class App(tk.Tk):
                     self.client.close()
                 except Exception:
                     pass
-            c = KeeneticClient(host)
-            c.login(user, password)
+            # Try RCI first (no plaintext password); fall back to Telnet.
+            c = None
+            transport_name = 'RCI'
+            try:
+                rci_probe = RCIClient(host)
+                if rci_probe.available():
+                    rc = KeeneticRCIClient(host)
+                    rc.login(user, password)
+                    c = rc
+                    transport_name = 'RCI (HTTP)'
+                else:
+                    rci_probe.close()
+            except Exception:
+                transport_name = 'Telnet (RCI unavailable)'
+            if c is None:
+                c = KeeneticClient(host)
+                c.login(user, password)
+                transport_name = 'Telnet'
+                try:
+                    components = c.get_components()
+                except Exception:
+                    components = set()
+                c.router_info['components'] = components
             ifaces = c.list_interfaces()
             cfg = c.running_config()
-            try:
-                components = c.get_components()
-            except Exception:
-                components = set()
-            c.router_info['components'] = components
+            c.router_info['_transport'] = transport_name
             return c, ifaces, cfg
 
         def done(result, err):
@@ -1014,8 +1033,10 @@ class App(tk.Tk):
                     self.iface_var.set(names[0])
             v = self.client.router_info.get('version', '?')
             vendor = self.client.router_info.get('vendor', '')
+            transport = self.client.router_info.get('_transport', '?')
             self.info_var.set(
-                f'{vendor} NDMS {v} · {len(self.interfaces)} interfaces · '
+                f'{vendor} NDMS {v} · {transport} · '
+                f'{len(self.interfaces)} interfaces · '
                 f'{len(self.state["groups"])} FQDN groups · '
                 f'{len(self.state["ip_routes"])} IP routes')
             self._set_state(ConnState.CONNECTED,
@@ -1103,7 +1124,8 @@ class App(tk.Tk):
                      'Роутер доступен по сети? Правильный IP?')
         elif isinstance(err, ConnectionRefusedError):
             human = ('Соединение отклонено. '
-                     'Включён ли Telnet (порт 23) на роутере?\n'
+                     'Доступен ли веб-интерфейс роутера? '
+                     'Если RCI недоступен — включите Telnet (порт 23):\n'
                      'Веб-UI → Настройки системы → Компоненты → Telnet.')
         elif isinstance(err, socket.gaierror):
             human = f'Не удаётся разрешить имя «{self.host_var.get()}».'

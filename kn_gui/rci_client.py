@@ -215,6 +215,70 @@ class RCIClient:
             # Some endpoints return an empty body on success.
             return None
 
+    # ── CLI-through-HTTP: /rci/parse ────────────────────────────────────
+
+    def parse(self, cli_command: str) -> dict:
+        """Execute an arbitrary CLI command via POST /rci/parse.
+
+        This is the universal write-path: every CLI command works here,
+        including context-sensitive ones (object-group → include → exit).
+        The router maintains a per-session CLI context just like Telnet.
+
+        Returns the parsed JSON response, typically:
+            {"parse": "<echoed command>", "prompt": "(config)>", "status": [...]}
+
+        `status` is a list of result objects; an empty list or list of
+        dicts without 'error' keys means success.
+        """
+        if not self._authed:
+            self._do_auth_flow()
+        # /rci/parse expects the command as a bare JSON string.
+        data = json.dumps(cli_command).encode('utf-8')
+        headers = {
+            'User-Agent': f'{APP_NAME}/{APP_VERSION}',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+        }
+        req = urllib.request.Request(
+            f'{self.base}/rci/parse', data=data, method='POST', headers=headers)
+        try:
+            with self._opener.open(req, timeout=self.timeout) as resp:
+                raw = resp.read(MAX_HTTP_BYTES + 1)
+                if len(raw) > MAX_HTTP_BYTES:
+                    raise RCICommandError('parse response too large')
+                return json.loads(raw.decode('utf-8', 'replace'))
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                self._authed = False
+                self._do_auth_flow()
+                # Retry once after re-auth.
+                with self._opener.open(req, timeout=self.timeout) as resp:
+                    raw = resp.read(MAX_HTTP_BYTES + 1)
+                    return json.loads(raw.decode('utf-8', 'replace'))
+            raise RCICommandError(f'parse {cli_command!r}: HTTP {e.code}') from e
+
+    def parse_batch(self, commands: list[str]) -> list[dict]:
+        """Execute multiple CLI commands sequentially via /rci/parse.
+
+        Returns a list of parse-responses, one per command. Maintains
+        CLI context across the batch (so object-group → include → exit
+        works as expected).
+        """
+        results: list[dict] = []
+        for cmd in commands:
+            results.append(self.parse(cmd))
+        return results
+
+    def batch(self, json_body: list[dict]) -> Any:
+        """POST /rci/ with a JSON array (native batch).
+
+        Each element maps to a CLI command tree. The router processes
+        them top-to-bottom. Use this for well-documented operations
+        (ip route, system config save, delete with "no": true).
+        Falls back to parse() for operations with unknown JSON mapping.
+        """
+        return self.post('', json_body)
+
     # ── Convenience wrappers (read-only; high-value use cases) ───────────
     def show_version(self) -> dict:
         """Firmware version + installed components (flat dict)."""

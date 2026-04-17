@@ -142,13 +142,17 @@ def download_update(url: str, dest: str,
 def apply_update(new_exe_path: str) -> None:
     """Replace the running exe with *new_exe_path* and restart.
 
-    Writes a small PowerShell script that:
-      1. Waits 2 s for the current process to fully exit.
-      2. Moves the new exe over the old one.
-      3. Launches the new exe.
-      4. Deletes itself.
+    Windows does not allow overwriting a running executable in-place, so
+    the script uses the rename-then-copy pattern:
+      1. Wait 3 s for the current process to fully exit.
+      2. Rename current exe → current.exe.bak  (rename works on running files).
+      3. Copy new exe      → current exe name.
+      4. Launch new exe.
+      5. Delete .bak and downloaded temp file.
 
-    Then spawns the script detached and calls sys.exit(0).
+    Retries up to 5 times (1 s apart) in case the process is slow to exit.
+    The PS1 is written as UTF-8 with BOM so PowerShell 5.1 reads Unicode
+    paths (Cyrillic usernames, etc.) correctly.
 
     Only has an effect when running as a frozen PyInstaller exe (IS_FROZEN).
     Does nothing (no-op) when running from source.
@@ -156,21 +160,43 @@ def apply_update(new_exe_path: str) -> None:
     if not IS_FROZEN:
         return
 
+    import subprocess
+
     current_exe = sys.executable
 
-    # Single-quoted PowerShell paths handle spaces; avoid double-quoting issues.
-    ps_lines = [
-        'Start-Sleep -Seconds 2',
-        f"Move-Item -Force '{new_exe_path}' '{current_exe}'",
-        f"Start-Process '{current_exe}'",
-    ]
-    ps_script = '\n'.join(ps_lines)
+    # Escape embedded double-quotes for use inside PowerShell "..." strings.
+    def _ps(path: str) -> str:
+        return '"' + path.replace('"', '`"') + '"'
+
+    ps_script = f"""\
+Start-Sleep -Seconds 3
+$cur = {_ps(current_exe)}
+$new = {_ps(new_exe_path)}
+$bak = $cur + '.bak'
+$bakName = [System.IO.Path]::GetFileName($bak)
+
+for ($i = 0; $i -lt 5; $i++) {{
+    try {{
+        if (Test-Path $bak) {{ Remove-Item $bak -Force -ErrorAction SilentlyContinue }}
+        Rename-Item -Path $cur -NewName $bakName -Force -ErrorAction Stop
+        Copy-Item  -Path $new -Destination $cur  -Force -ErrorAction Stop
+        Start-Process $cur
+        Start-Sleep -Seconds 1
+        Remove-Item $bak -Force -ErrorAction SilentlyContinue
+        Remove-Item $new -Force -ErrorAction SilentlyContinue
+        break
+    }} catch {{
+        Start-Sleep -Seconds 1
+    }}
+}}
+Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
+"""
 
     ps_path = os.path.join(tempfile.gettempdir(), '_kfm_update.ps1')
-    with open(ps_path, 'w', encoding='utf-8') as fh:
+    # UTF-8 with BOM — PowerShell 5.1 requires BOM to detect UTF-8 encoding.
+    with open(ps_path, 'w', encoding='utf-8-sig') as fh:
         fh.write(ps_script)
 
-    import subprocess
     subprocess.Popen(
         [
             'powershell.exe',
@@ -180,7 +206,6 @@ def apply_update(new_exe_path: str) -> None:
             '-File', ps_path,
         ],
         creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
-        close_fds=True,
     )
     sys.exit(0)
 

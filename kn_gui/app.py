@@ -993,6 +993,98 @@ class App(tk.Tk):
 
         self.worker.run(do, on_done=done)
 
+    # ── Delete managed VPN interfaces ──────────────────────────────────
+    def _on_delete_managed_vpns(self):
+        """Remove every VPN interface this app created.
+
+        Identification: the `description` field carries the
+        MANAGED_INTERFACE_TAG. Only those interfaces are touched —
+        user-made VPN clients remain untouched.
+        """
+        if not self._ensure_connected():
+            return
+
+        client = self.client
+
+        def list_them():
+            return client.list_managed_interfaces()
+
+        def after_list(result, err):
+            if err is not None:
+                self.log(f'Не удалось получить список интерфейсов: {err}', 'err')
+                return
+            managed: list[dict] = result or []
+            if not managed:
+                messagebox.showinfo(
+                    APP_NAME,
+                    'На роутере нет VPN-интерфейсов, созданных этим приложением.\n\n'
+                    'Интерфейсы, созданные вручную в веб-UI Keenetic, не затрагиваются.',
+                )
+                return
+
+            # Show a confirmation dialog with the list.
+            names = '\n'.join(
+                f'  • {i["name"]}  —  {i.get("description", "")[:60]}'
+                for i in managed)
+            if not messagebox.askyesno(
+                    APP_NAME,
+                    f'Удалить {len(managed)} VPN-интерфейс(ов), созданных приложением?\n\n'
+                    f'{names}\n\n'
+                    'Пользовательские интерфейсы не затрагиваются.'):
+                return
+
+            # Do the actual removal in a second worker pass.
+            def remove():
+                removed: list[str] = []
+                errors: list[tuple[str, str]] = []
+                for iface in managed:
+                    name = iface.get('name', '')
+                    if not name:
+                        continue
+                    try:
+                        client.delete_interface(name)
+                        removed.append(name)
+                    except Exception as e:  # noqa: BLE001
+                        errors.append((name, str(e)))
+                try:
+                    client.save_config()
+                except Exception as e:  # noqa: BLE001
+                    errors.append(('save_config', str(e)))
+                ifaces = client.list_interfaces()
+                return removed, errors, ifaces
+
+            def after_remove(res, err):
+                if err is not None:
+                    self.log(f'Ошибка при удалении: {err}', 'err')
+                    messagebox.showerror(APP_NAME, str(err))
+                    return
+                removed, errors, ifaces = res
+                self.interfaces = ifaces
+                names = [i['name'] for i in ifaces]
+                # Refresh the interface dropdown; keep selection if still valid.
+                self.iface_combo.configure(values=names,
+                                            state='readonly' if names else 'disabled')
+                if self.iface_var.get() not in names:
+                    self.iface_var.set(names[0] if names else '')
+                for n in removed:
+                    self.log(f'  ✓ удалён {n}', 'ok')
+                for n, e in errors:
+                    self.log(f'  ✗ {n}: {e}', 'err')
+                self._update_warnings()
+                if errors:
+                    messagebox.showwarning(
+                        APP_NAME,
+                        f'Удалено: {len(removed)}\nОшибок: {len(errors)}\n\n'
+                        'Подробности — в журнале.')
+                else:
+                    messagebox.showinfo(
+                        APP_NAME,
+                        f'Удалено {len(removed)} интерфейс(ов).')
+
+            self.worker.run(remove, on_done=after_remove)
+
+        self.worker.run(list_them, on_done=after_list)
+
     def _build_vpngate_live_tab(self):
         from .tabs import vpngate as _vpn_tab
         _vpn_tab.build_live(self)

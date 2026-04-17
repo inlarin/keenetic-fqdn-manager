@@ -48,6 +48,10 @@ def build_bootstrap(app) -> None:
     ttk.Button(toolbar, text='▶ Создать SSTP-интерфейс из выбранного',
                command=app._bootstrap_create_interface,
                style='Accent.TButton').pack(side='left', padx=(6, 0))
+    # Placed on the right: cleanup action that affects whichever sub-tab
+    # the user is on. Wired to a single handler in App.
+    ttk.Button(toolbar, text='🗑 Удалить созданные приложением VPN',
+               command=app._on_delete_managed_vpns).pack(side='right')
     app.bootstrap_status_var = tk.StringVar(value='Ещё не проверялось')
     ttk.Label(toolbar, textvariable=app.bootstrap_status_var, foreground='#555',
               style='Status.TLabel').pack(side='left', padx=10)
@@ -132,6 +136,8 @@ def build_live(app) -> None:
                style='Accent.TButton').pack(side='left')
     ttk.Button(toolbar, text='🔍 Проверить доступность',
                command=app._vpngate_test_reach).pack(side='left', padx=(6, 0))
+    ttk.Button(toolbar, text='🗑 Удалить созданные приложением VPN',
+               command=app._on_delete_managed_vpns).pack(side='right')
     app.vpngate_status_var = tk.StringVar(value='Ещё не загружено')
     ttk.Label(toolbar, textvariable=app.vpngate_status_var, foreground='#555',
               style='Status.TLabel').pack(side='left', padx=10)

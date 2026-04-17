@@ -177,3 +177,79 @@ def test_find_free_sstp_index():
     assert client.find_free_sstp_index([]) == 1
     assert client.find_free_sstp_index(['SSTP1', 'SSTP2']) == 3
     assert client.find_free_sstp_index(['SSTP1', 'SSTP3']) == 2
+
+
+# ── Managed interface tagging + delete flow ──────────────────────────────
+
+def test_create_sstp_tags_description(mock_rci):
+    """Every interface we create must carry MANAGED_INTERFACE_TAG in
+    its description so list_managed_interfaces() can pick it up later."""
+    from kn_gui.constants import MANAGED_INTERFACE_TAG
+    mock_rci._rci.parse.return_value = {
+        'parse': '', 'prompt': '(config)>', 'status': [],
+    }
+    mock_rci.create_sstp_interface(
+        'SSTP1', peer='203.0.113.5', user='vpn', password='vpn',
+        description='VPN Gate JP tokyo-1')
+    calls = [c.args[0] for c in mock_rci._rci.parse.call_args_list]
+    # Must be exactly one description command, and it must carry the tag.
+    desc_calls = [c for c in calls if c.startswith('description ')]
+    assert len(desc_calls) == 1, f'expected 1 description, got {desc_calls}'
+    assert MANAGED_INTERFACE_TAG in desc_calls[0]
+
+
+def test_create_sstp_sets_ip_global(mock_rci):
+    """Regression: without `ip global` the interface isn't eligible for
+    policy routing, and dns-proxy rules silently don't fire."""
+    mock_rci._rci.parse.return_value = {
+        'parse': '', 'prompt': '(config)>', 'status': [],
+    }
+    mock_rci.create_sstp_interface(
+        'SSTP1', peer='203.0.113.5', user='vpn', password='vpn')
+    calls = [c.args[0] for c in mock_rci._rci.parse.call_args_list]
+    assert any(c.startswith('ip global ') for c in calls), (
+        'create_sstp_interface must emit `ip global <N>` '
+        '(the "Use for internet" flag in the web UI)')
+
+
+def test_list_managed_interfaces_filters_by_tag():
+    """Mix of managed + user interfaces; we return only the managed ones."""
+    from kn_gui.constants import MANAGED_INTERFACE_TAG
+    client = KeeneticRCIClient.__new__(KeeneticRCIClient)
+    client._rci = MagicMock(spec=RCIClient)
+    # Stub list_interfaces() via a direct method patch.
+    client.list_interfaces = MagicMock(return_value=[
+        {'name': 'SSTP0', 'type': 'SSTP', 'description': 'manual config',
+         'link': 'up', 'connected': 'yes'},
+        {'name': 'SSTP1', 'type': 'SSTP',
+         'description': f'{MANAGED_INTERFACE_TAG} VPN Gate JP',
+         'link': 'up', 'connected': 'yes'},
+        {'name': 'SSTP2', 'type': 'SSTP',
+         'description': f'{MANAGED_INTERFACE_TAG} VPN Gate KR',
+         'link': 'down', 'connected': 'no'},
+        {'name': 'Wireguard0', 'type': 'Wireguard',
+         'description': 'my wg',
+         'link': 'up', 'connected': 'yes'},
+    ])
+    managed = client.list_managed_interfaces()
+    names = [i['name'] for i in managed]
+    assert names == ['SSTP1', 'SSTP2']
+
+
+def test_list_managed_interfaces_empty_when_none_tagged():
+    client = KeeneticRCIClient.__new__(KeeneticRCIClient)
+    client._rci = MagicMock(spec=RCIClient)
+    client.list_interfaces = MagicMock(return_value=[
+        {'name': 'SSTP0', 'type': 'SSTP', 'description': 'manual',
+         'link': 'up', 'connected': 'yes'},
+    ])
+    assert client.list_managed_interfaces() == []
+
+
+def test_delete_interface_sends_no_interface(mock_rci):
+    mock_rci._rci.parse.return_value = {
+        'parse': '', 'prompt': '(config)>', 'status': [],
+    }
+    mock_rci.delete_interface('SSTP1')
+    calls = [c.args[0] for c in mock_rci._rci.parse.call_args_list]
+    assert 'no interface SSTP1' in calls

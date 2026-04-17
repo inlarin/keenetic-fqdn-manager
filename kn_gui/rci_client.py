@@ -38,6 +38,74 @@ from typing import Any, Optional
 from .constants import APP_NAME, APP_VERSION, MAX_HTTP_BYTES
 
 
+def _config_from_json(data: dict) -> str:
+    """Convert the JSON tree returned by GET /rci/show/running-config into
+    the minimal CLI-text stanzas that ``parse_running_config()`` understands.
+
+    The JSON structure varies slightly across NDMS versions; the parser is
+    intentionally defensive — unknown shapes are silently skipped.
+    """
+    lines: list[str] = []
+
+    # ── FQDN object groups ────────────────────────────────────────────────
+    og = data.get('object-group') or {}
+    fqdn_groups = og.get('fqdn', {}) if isinstance(og, dict) else {}
+    if isinstance(fqdn_groups, dict):
+        for name, grp in fqdn_groups.items():
+            lines.append(f'object-group fqdn {name}')
+            inc = (grp or {}).get('include') if isinstance(grp, dict) else None
+            if isinstance(inc, dict):
+                # NDMS 4.x: {'host': [{'name': 'domain'}, ...]}
+                for h in (inc.get('host') or []):
+                    host = (h.get('name') or h.get('host', '')) if isinstance(h, dict) else str(h)
+                    if host:
+                        lines.append(f' include {host}')
+            elif isinstance(inc, list):
+                # Alternative: [{'host': 'domain'}, ...] or ['domain', ...]
+                for h in inc:
+                    host = (h.get('host') or h.get('name', '')) if isinstance(h, dict) else str(h)
+                    if host:
+                        lines.append(f' include {host}')
+            lines.append('!')
+
+    # ── DNS-proxy routes ──────────────────────────────────────────────────
+    dp = data.get('dns-proxy') or {}
+    if isinstance(dp, dict):
+        route = dp.get('route')
+        if route is not None:
+            lines.append('dns-proxy')
+            routes = route if isinstance(route, list) else [route]
+            for r in routes:
+                if not isinstance(r, dict):
+                    continue
+                grp   = r.get('object-group', '')
+                iface = r.get('interface', '')
+                auto   = ' auto'   if (r.get('auto')   or 'auto'   in r) else ''
+                reject = ' reject' if (r.get('reject') or 'reject' in r) else ''
+                if grp and iface:
+                    lines.append(f' route object-group {grp} {iface}{auto}{reject}')
+            lines.append('!')
+
+    # ── IP static routes ──────────────────────────────────────────────────
+    ip_sec = data.get('ip') or {}
+    if isinstance(ip_sec, dict):
+        routes = ip_sec.get('route') or []
+        if isinstance(routes, dict):
+            routes = [routes]
+        for r in routes:
+            if not isinstance(r, dict):
+                continue
+            net    = r.get('address') or r.get('network', '')
+            mask   = r.get('mask')    or r.get('netmask', '')
+            iface  = r.get('interface') or r.get('gateway', '')
+            auto   = ' auto'   if (r.get('auto')   or 'auto'   in r) else ''
+            reject = ' reject' if (r.get('reject') or 'reject' in r) else ''
+            if net and mask and iface:
+                lines.append(f'ip route {net} {mask} {iface}{auto}{reject}')
+
+    return '\n'.join(lines)
+
+
 def _extract_parse_text(resp) -> str:
     """Pull CLI text out of a `/rci/parse` response.
 
@@ -335,33 +403,72 @@ class RCIClient:
         return self.get(f'show/interface/{name}') or {}
 
     def show_running_config(self) -> str:
-        """Raw running-config text in Keenetic CLI format.
+        """Running-config as CLI text (or synthetic equivalent).
 
-        The native `/rci/show/running-config` endpoint sometimes returns a
-        structured JSON tree instead of the textual dump, in which case
-        the CLI parser downstream (`parse_running_config` that hunts for
-        `object-group fqdn X` + `include Y` lines) sees nothing and the
-        UI shows "no applied services" on a router that clearly has them.
+        Three-stage strategy:
+        1. GET /rci/show/running-config or /rci/show/configuration — fast
+           path; works when firmware returns a plain-text blob.
+        2. POST /rci/parse "show running-config" — CLI-through-HTTP; works
+           on most NDMS 5.x builds that populate status[*].message.
+        3. Convert the JSON tree from step 1 to synthetic CLI text — handles
+           NDMS versions that only expose a structured JSON object.
 
-        Strategy: try native text first (fast path); if it looks empty
-        or JSON-shaped, fall back to `/rci/parse "show running-config"`
-        which is guaranteed to return the CLI text format identical to
-        what Telnet produced.
+        Returns '' only when all three stages fail (caller should treat this
+        as "config temporarily unavailable" rather than a fatal error).
         """
-        # 1. Try native endpoints — fast when they yield a text blob.
+        import logging
+        _log = logging.getLogger(__name__)
+
+        # 1. Try native GET endpoints — fast when they yield a text blob.
+        _first_json: dict | None = None
         for path in ('show/running-config', 'show/configuration'):
-            data = self.get(path)
+            try:
+                data = self.get(path)
+            except Exception as exc:
+                _log.debug('show_running_config GET %s failed: %s', path, exc)
+                continue
             if data is None:
+                _log.debug('show_running_config GET %s → 404', path)
                 continue
             if isinstance(data, str) and _looks_like_cli_text(data):
+                _log.debug('show_running_config GET %s → CLI text (%d chars)', path, len(data))
                 return data
             if isinstance(data, dict):
+                _log.debug('show_running_config GET %s → JSON dict, keys=%s',
+                           path, list(data.keys())[:8])
+                if _first_json is None:
+                    _first_json = data
                 msg = data.get('message')
                 if isinstance(msg, str) and _looks_like_cli_text(msg):
+                    _log.debug('show_running_config GET %s → .message CLI text (%d chars)',
+                               path, len(msg))
                     return msg
-        # 2. Fallback: parse-based — always returns CLI text.
-        resp = self.parse('show running-config')
-        return _extract_parse_text(resp)
+            else:
+                _log.debug('show_running_config GET %s → unexpected type %s',
+                           path, type(data).__name__)
+
+        # 2. POST /rci/parse — CLI-through-HTTP.
+        try:
+            resp = self.parse('show running-config')
+            text = _extract_parse_text(resp)
+            if text:
+                _log.debug('show_running_config parse → %d chars', len(text))
+                return text
+            _log.debug('show_running_config parse → empty (resp keys=%s)',
+                       list(resp.keys()) if isinstance(resp, dict) else type(resp).__name__)
+        except Exception as exc:
+            _log.debug('show_running_config parse failed: %s', exc)
+
+        # 3. JSON-tree → synthetic CLI text.
+        if _first_json:
+            text = _config_from_json(_first_json)
+            _log.debug('show_running_config JSON→CLI: %d chars, groups=%s',
+                       len(text),
+                       list((_first_json.get('object-group') or {}).get('fqdn', {}).keys()))
+            return text
+
+        _log.warning('show_running_config: all strategies failed, returning empty')
+        return ''
 
     def show_system(self) -> dict:
         """System snapshot: uptime, cpuload, memory."""

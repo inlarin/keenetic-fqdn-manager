@@ -192,16 +192,21 @@ class KeeneticRCIClient:
         return _parse_interfaces_text(text)
 
     def running_config(self) -> str:
-        # Mirror the Telnet path which uses a 20-second timeout for this command.
+        """Return running-config as CLI text, or '' if unavailable.
+
+        Uses a 20 s timeout (matching the Telnet path) to give slower
+        routers enough headroom.  Does NOT raise — an empty return means
+        "config temporarily unavailable"; the caller should proceed with
+        empty state and surface a warning to the user.
+        """
         old_timeout = self._rci.timeout
         self._rci.timeout = 20.0
         try:
-            text = self._rci.show_running_config()
+            return self._rci.show_running_config()
+        except Exception:
+            return ''
         finally:
             self._rci.timeout = old_timeout
-        if not text:
-            raise RuntimeError('timeout reading running-config')
-        return text
 
     def get_components(self) -> set[str]:
         return self.router_info.get('components', set())

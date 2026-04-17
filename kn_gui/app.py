@@ -12,6 +12,7 @@ Concurrency model:
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import socket
 import sys
@@ -47,6 +48,26 @@ from .worker import Worker
 # App
 # ─────────────────────────────────────────────────────────────────────────────
 
+class _UiLogHandler(logging.Handler):
+    """Forwards WARNING+ messages from background modules to the App UI log.
+
+    Uses after_idle() so emit() is safe to call from any thread.
+    """
+
+    def __init__(self, app: 'App'):
+        super().__init__(logging.WARNING)
+        self._app = app
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            # Schedule on the main thread — Tkinter is not thread-safe.
+            self._app.after_idle(
+                lambda m=msg: self._app.log(f'[diag] {m}', 'warn'))
+        except Exception:
+            pass
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -75,6 +96,9 @@ class App(tk.Tk):
         self._set_state(ConnState.DISCONNECTED)
         self.protocol('WM_DELETE_WINDOW', self._on_close)
         self._drain_queue()
+        # Route WARNING+ messages from rci_client to the UI log.
+        self._rci_log_handler = _UiLogHandler(self)
+        logging.getLogger('kn_gui.rci_client').addHandler(self._rci_log_handler)
         # Non-blocking update check at startup.
         self._check_update_async()
 
@@ -1151,6 +1175,12 @@ class App(tk.Tk):
                 return
             self.client, self.interfaces, cfg = result
             self.state = parse_running_config(cfg)
+            if not cfg:
+                self.log(
+                    'Конфиг роутера не удалось прочитать — '
+                    'текущее состояние неизвестно (нажмите «Обновить» чтобы повторить).',
+                    'warn',
+                )
             names = [i['name'] for i in self.interfaces]
             self.iface_combo.configure(values=names, state='readonly')
             saved_iface = self.ui_cfg.get('last_interface', '')

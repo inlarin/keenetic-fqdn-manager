@@ -1,7 +1,7 @@
 # PyInstaller
 build/
 dist/
-*.spec
+# KeeneticFqdnManager.spec is kept — CI uses it for the release build.
 
 # Python
 __pycache__/

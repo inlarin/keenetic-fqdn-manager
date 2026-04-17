@@ -117,7 +117,7 @@ class App(tk.Tk):
         """Non-blocking update check at startup. Silent on failure or
         when already up-to-date — only shows a dialog if a new version
         is available."""
-        from .updater import check_for_update, open_release_page
+        from .updater import check_for_update
 
         def do():
             return check_for_update(timeout=6.0)
@@ -127,19 +127,28 @@ class App(tk.Tk):
                 return  # silent on errors at startup
             if not info.available:
                 return  # up-to-date, nothing to show
-            if messagebox.askyesno(
-                    f'{APP_NAME} — обновление',
-                    f'Доступна новая версия: v{info.latest}\n'
-                    f'(текущая: v{info.current})\n\n'
-                    'Открыть страницу загрузки?'):
-                open_release_page(info.release_url)
+            if info.download_url:
+                if messagebox.askyesno(
+                        f'{APP_NAME} — обновление',
+                        f'Доступна новая версия: v{info.latest}\n'
+                        f'(текущая: v{info.current})\n\n'
+                        'Скачать и установить автоматически?'):
+                    self._download_and_apply(info)
+            else:
+                from .updater import open_release_page
+                if messagebox.askyesno(
+                        f'{APP_NAME} — обновление',
+                        f'Доступна новая версия: v{info.latest}\n'
+                        f'(текущая: v{info.current})\n\n'
+                        'Открыть страницу загрузки?'):
+                    open_release_page(info.release_url)
 
         self.worker.run(do, on_done=done)
 
     def _check_update_manual(self):
         """Explicit menu-triggered update check — shows result even when
         up-to-date or on error."""
-        from .updater import check_for_update, open_release_page
+        from .updater import check_for_update
 
         def do():
             return check_for_update(timeout=10.0)
@@ -160,14 +169,138 @@ class App(tk.Tk):
                 messagebox.showinfo(APP_NAME,
                                     f'Установлена актуальная версия v{info.current}.')
                 return
-            if messagebox.askyesno(
-                    f'{APP_NAME} — обновление',
-                    f'Доступна новая версия: v{info.latest}\n'
-                    f'(текущая: v{info.current})\n\n'
-                    'Открыть страницу загрузки?'):
-                open_release_page(info.release_url)
+            if info.download_url:
+                if messagebox.askyesno(
+                        f'{APP_NAME} — обновление',
+                        f'Доступна новая версия: v{info.latest}\n'
+                        f'(текущая: v{info.current})\n\n'
+                        'Скачать и установить автоматически?'):
+                    self._download_and_apply(info)
+            else:
+                from .updater import open_release_page
+                if messagebox.askyesno(
+                        f'{APP_NAME} — обновление',
+                        f'Доступна новая версия: v{info.latest}\n'
+                        f'(текущая: v{info.current})\n\n'
+                        'Открыть страницу загрузки?'):
+                    open_release_page(info.release_url)
 
         self.worker.run(do, on_done=done)
+
+    def _download_and_apply(self, info) -> None:
+        """Show a progress dialog, download the new exe, then apply the update.
+
+        Uses a plain daemon thread (not the Worker) so the UI stays fully
+        responsive and the Worker remains free for other operations.
+        The progress bar is driven by ``self.after(0, ...)`` callbacks that
+        are safe to post from any thread.
+        """
+        import os
+        import tempfile
+        from .updater import IS_FROZEN, apply_update, download_update
+
+        dest = os.path.join(
+            tempfile.gettempdir(),
+            f'KeeneticFqdnManager_{info.latest}.exe',
+        )
+
+        # ── Progress dialog ──────────────────────────────────────────────
+        dlg = tk.Toplevel(self)
+        dlg.title('Загрузка обновления')
+        dlg.resizable(False, False)
+        dlg.protocol('WM_DELETE_WINDOW', lambda: None)  # disable × button
+
+        ttk.Label(
+            dlg, text=f'Скачивание v{info.latest}…',
+            font=('Segoe UI', 10, 'bold'),
+        ).pack(padx=24, pady=(18, 6))
+
+        pbar = ttk.Progressbar(dlg, length=380, mode='determinate', maximum=100)
+        pbar.pack(padx=24, pady=4)
+
+        status_var = tk.StringVar(value='Инициализация…')
+        ttk.Label(dlg, textvariable=status_var,
+                  font=('Segoe UI', 9)).pack(padx=24, pady=(4, 4))
+
+        cancelled = threading.Event()
+
+        def _cancel():
+            cancelled.set()
+            btn_cancel.configure(state='disabled', text='Отмена…')
+
+        btn_cancel = ttk.Button(dlg, text='Отмена', command=_cancel, width=10)
+        btn_cancel.pack(pady=(6, 18))
+
+        dlg.update_idletasks()
+        px = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
+        py = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry(f'+{px}+{py}')
+        dlg.grab_set()
+
+        # ── Background download ──────────────────────────────────────────
+        error_box: list = [None]
+
+        def _set_ui(pct: float, text: str) -> None:
+            try:
+                pbar['value'] = pct
+                status_var.set(text)
+            except Exception:
+                pass
+
+        def _on_progress(done: int, total: int) -> None:
+            if cancelled.is_set():
+                return
+            if total > 0:
+                pct = done / total * 100
+                mb_d = done / (1 << 20)
+                mb_t = total / (1 << 20)
+                self.after(0, lambda: _set_ui(pct, f'{mb_d:.1f} / {mb_t:.1f} МБ'))
+            else:
+                mb_d = done / (1 << 20)
+                self.after(0, lambda: _set_ui(0, f'{mb_d:.1f} МБ…'))
+
+        def _run() -> None:
+            try:
+                download_update(
+                    info.download_url, dest,
+                    on_progress=_on_progress,
+                    is_cancelled=cancelled.is_set,
+                )
+            except Exception as exc:
+                error_box[0] = exc
+            self.after(0, _finish)
+
+        def _finish() -> None:
+            try:
+                dlg.grab_release()
+                dlg.destroy()
+            except Exception:
+                pass
+
+            if cancelled.is_set():
+                # Clean up partial file silently.
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
+                return
+
+            if error_box[0]:
+                messagebox.showerror(APP_NAME,
+                                     f'Ошибка загрузки:\n{error_box[0]}')
+                return
+
+            if IS_FROZEN:
+                if messagebox.askyesno(
+                        f'{APP_NAME} — обновление',
+                        f'Версия v{info.latest} готова.\n'
+                        'Перезапустить приложение сейчас?'):
+                    apply_update(dest)
+            else:
+                # Dev mode: just report where the file landed.
+                messagebox.showinfo(APP_NAME, f'Файл скачан:\n{dest}')
+
+        threading.Thread(target=_run, daemon=True).start()
 
     # ── Styling ─────────────────────────────────────────────────────────
     def _init_style(self):

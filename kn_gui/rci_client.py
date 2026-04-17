@@ -360,10 +360,7 @@ class RCIClient:
                 if isinstance(msg, str) and _looks_like_cli_text(msg):
                     return msg
         # 2. Fallback: parse-based — always returns CLI text.
-        try:
-            resp = self.parse('show running-config')
-        except Exception:
-            return ''
+        resp = self.parse('show running-config')
         return _extract_parse_text(resp)
 
     def show_system(self) -> dict:

@@ -192,7 +192,13 @@ class KeeneticRCIClient:
         return _parse_interfaces_text(text)
 
     def running_config(self) -> str:
-        text = self._rci.show_running_config()
+        # Mirror the Telnet path which uses a 20-second timeout for this command.
+        old_timeout = self._rci.timeout
+        self._rci.timeout = 20.0
+        try:
+            text = self._rci.show_running_config()
+        finally:
+            self._rci.timeout = old_timeout
         if not text:
             raise RuntimeError('timeout reading running-config')
         return text

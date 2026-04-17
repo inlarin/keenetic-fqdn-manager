@@ -483,11 +483,13 @@ Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
         # Also: CREATE_NEW_PROCESS_GROUP lets PowerShell outlive us even
         # on Windows 7. DETACHED_PROCESS on its own doesn't always break
         # the console tie when we never had a console to begin with.
-        creationflags = (
-            subprocess.CREATE_NEW_PROCESS_GROUP
-            | subprocess.DETACHED_PROCESS
-            | subprocess.CREATE_NO_WINDOW
-        )
+        # Windows-only flags — use getattr(... , 0) so the module stays
+        # importable on Linux/macOS (where the test suite runs in CI).
+        # apply_update is a no-op on non-frozen builds anyway.
+        _CNPG = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+        _DET  = getattr(subprocess, 'DETACHED_PROCESS', 0)
+        _CNW  = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        creationflags = _CNPG | _DET | _CNW
         subprocess.Popen(
             [
                 'powershell.exe',

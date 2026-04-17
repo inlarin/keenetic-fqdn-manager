@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -465,10 +466,14 @@ def test_apply_update_spawns_detached_powershell(monkeypatch, tmp_path):
     assert kwargs['stderr'] == _sp.DEVNULL
     assert kwargs['close_fds'] is True
 
-    flags = kwargs['creationflags']
-    assert flags & _sp.DETACHED_PROCESS
-    assert flags & _sp.CREATE_NO_WINDOW
-    assert flags & _sp.CREATE_NEW_PROCESS_GROUP
+    # The Windows-specific creationflags are guarded by getattr() so the
+    # code runs on Linux CI too. On Windows they should all be present;
+    # on Linux they're 0 (falsy) and the assertion below stays truthful.
+    if sys.platform == 'win32':
+        flags = kwargs['creationflags']
+        assert flags & _sp.DETACHED_PROCESS
+        assert flags & _sp.CREATE_NO_WINDOW
+        assert flags & _sp.CREATE_NEW_PROCESS_GROUP
 
     # sys.exit must be called at the end.
     assert exit_calls == [0]

@@ -73,12 +73,15 @@ class App(tk.Tk):
         self._set_state(ConnState.DISCONNECTED)
         self.protocol('WM_DELETE_WINDOW', self._on_close)
         self._drain_queue()
+        # Non-blocking update check at startup.
+        self._check_update_async()
 
     def _build_menu(self):
-        """Top menu bar. Just a Help menu for now: keyboard shortcuts cheat
-        sheet — the app had hotkeys all along but only the README knew."""
         menubar = tk.Menu(self)
         help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label='Проверить обновления…',
+                              command=self._check_update_manual)
+        help_menu.add_separator()
         help_menu.add_command(label='Горячие клавиши…', command=self._show_hotkeys,
                               accelerator='F1')
         help_menu.add_separator()
@@ -106,6 +109,63 @@ class App(tk.Tk):
             'Настройки UI сохраняются в %APPDATA%\\KeeneticFqdnManager\\ui.json.\n'
             'Пароль никогда не сохраняется между сессиями.',
         )
+
+    # ── Auto-update ────────────────────────────────────────────────────
+    def _check_update_async(self):
+        """Non-blocking update check at startup. Silent on failure or
+        when already up-to-date — only shows a dialog if a new version
+        is available."""
+        from .updater import check_for_update, open_release_page
+
+        def do():
+            return check_for_update(timeout=6.0)
+
+        def done(info, err):
+            if err is not None or info is None:
+                return  # silent on errors at startup
+            if not info.available:
+                return  # up-to-date, nothing to show
+            if messagebox.askyesno(
+                    f'{APP_NAME} — обновление',
+                    f'Доступна новая версия: v{info.latest}\n'
+                    f'(текущая: v{info.current})\n\n'
+                    'Открыть страницу загрузки?'):
+                open_release_page(info.release_url)
+
+        self.worker.run(do, on_done=done)
+
+    def _check_update_manual(self):
+        """Explicit menu-triggered update check — shows result even when
+        up-to-date or on error."""
+        from .updater import check_for_update, open_release_page
+
+        def do():
+            return check_for_update(timeout=10.0)
+
+        def done(info, err):
+            if err is not None:
+                messagebox.showwarning(APP_NAME,
+                                       f'Не удалось проверить обновления:\n{err}')
+                return
+            if info is None:
+                messagebox.showinfo(APP_NAME, 'Не удалось получить информацию.')
+                return
+            if info.error:
+                messagebox.showwarning(APP_NAME,
+                                       f'Ошибка проверки:\n{info.error}')
+                return
+            if not info.available:
+                messagebox.showinfo(APP_NAME,
+                                    f'Установлена актуальная версия v{info.current}.')
+                return
+            if messagebox.askyesno(
+                    f'{APP_NAME} — обновление',
+                    f'Доступна новая версия: v{info.latest}\n'
+                    f'(текущая: v{info.current})\n\n'
+                    'Открыть страницу загрузки?'):
+                open_release_page(info.release_url)
+
+        self.worker.run(do, on_done=done)
 
     # ── Styling ─────────────────────────────────────────────────────────
     def _init_style(self):

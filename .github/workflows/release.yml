@@ -39,9 +39,25 @@ jobs:
           name: KeeneticFqdnManager-${{ github.ref_name }}
           path: dist/KeeneticFqdnManager.exe
 
+      - name: Extract tag annotation as release body
+        id: tag_body
+        shell: bash
+        run: |
+          # Annotated tags have a message body; use it as release notes.
+          # Falls back to auto-generated changelog if the tag has no body.
+          BODY=$(git tag -l --format='%(contents:body)' "${{ github.ref_name }}" | head -200)
+          if [ -z "$BODY" ]; then
+            echo "has_body=false" >> "$GITHUB_OUTPUT"
+          else
+            # Write multi-line body to a file for the next step.
+            echo "$BODY" > release_body.md
+            echo "has_body=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Attach exe to the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/KeeneticFqdnManager.exe
-          generate_release_notes: true
+          body_path: ${{ steps.tag_body.outputs.has_body == 'true' && 'release_body.md' || '' }}
+          generate_release_notes: ${{ steps.tag_body.outputs.has_body != 'true' }}
           fail_on_unmatched_files: true

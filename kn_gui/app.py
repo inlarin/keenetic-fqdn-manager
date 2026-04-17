@@ -100,6 +100,11 @@ class App(tk.Tk):
         # Route WARNING+ messages from rci_client to the UI log.
         self._rci_log_handler = _UiLogHandler(self)
         logging.getLogger('kn_gui.rci_client').addHandler(self._rci_log_handler)
+        # If the previous run attempted to update but the restart was
+        # rolled back (AV lock, AppLocker, truncated download, …), the
+        # PS1 left a status file. Surface it before the normal update
+        # check — otherwise we'd immediately prompt them to try again.
+        self._report_prior_update_failure()
         # Non-blocking update check at startup.
         self._check_update_async()
         # First-run UX: auto-scan LAN so the user doesn't have to think
@@ -141,6 +146,57 @@ class App(tk.Tk):
         )
 
     # ── Auto-update ────────────────────────────────────────────────────
+    def _report_prior_update_failure(self) -> None:
+        """Pick up any status file left by a failed PS1 restart.
+
+        The message explains to the user *why* the app still shows the
+        old version — previously an AV lock / AppLocker would silently
+        restart the old version and the user would just see an endless
+        "update available" prompt with no explanation.
+
+        Deferred via ``after(800, …)`` so the main window is painted
+        first; a messagebox popping on top of a half-drawn window is
+        jarring UX.
+        """
+        import os as _os
+        from .updater import pop_update_status
+
+        status = pop_update_status()
+        if not status:
+            return
+
+        kind = status['kind']
+        reason = status['reason'] or '(причина не записана)'
+        new_exe = status['new_exe']
+
+        headlines = {
+            'ROLLED_BACK':
+                'Обновление не удалось установить, запущена старая версия.',
+            'VANISHED':
+                'Скачанный файл обновления исчез перед установкой '
+                '(скорее всего удалён антивирусом).',
+            'TRUNCATED':
+                'Скачанный файл обновления оказался неполным. '
+                'Проверьте сеть и попробуйте снова.',
+            'ROLLBACK_FAILED':
+                'Обновление не удалось И откат не прошёл. '
+                'Приложение может быть в некорректном состоянии.',
+        }
+        head = headlines.get(kind, 'Обновление не установлено.')
+
+        details = [head, '', f'Причина: {reason}']
+        if new_exe and _os.path.exists(new_exe):
+            details.append('')
+            details.append(
+                f'Скачанный файл сохранён в:\n{new_exe}\n\n'
+                'Вы можете заменить текущий .exe вручную или повторить '
+                'обновление из меню «Справка → Проверить обновления».')
+
+        def _show():
+            messagebox.showwarning(f'{APP_NAME} — обновление', '\n'.join(details))
+
+        self.after(800, _show)
+
     def _check_update_async(self):
         """Non-blocking update check at startup. Silent on failure or
         when already up-to-date — only shows a dialog if a new version

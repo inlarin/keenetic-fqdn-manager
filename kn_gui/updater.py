@@ -33,6 +33,12 @@ from .constants import APP_NAME, APP_VERSION
 
 LOGGER = logging.getLogger(__name__)
 
+# Shared file names for the PS1 ↔ Python status channel.
+# PS1 writes here when the restart fails (AV lock, permission, etc.).
+# On next launch App.__init__ reads + shows + deletes.
+UPDATE_LOG_NAME = 'kfm_update.log'
+UPDATE_STATUS_NAME = 'kfm_update_status.txt'
+
 GITHUB_OWNER = 'inlarin'
 GITHUB_REPO = 'keenetic-fqdn-manager'
 RELEASES_API = f'https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest'
@@ -328,11 +334,11 @@ def download_update(url: str, dest: str,
 
 # PowerShell self-update retry budget. Windows Defender / corporate AV can
 # hold a write-lock on a freshly-downloaded exe for tens of seconds while
-# scanning. 20 × 1-second retries (= 20 s) covers the common case without
-# leaving the app in a limbo state on slower machines.
-_PS_APPLY_RETRIES = 20
-_PS_INITIAL_WAIT = 3    # seconds to wait for the Python process to exit
-_PS_RETRY_WAIT = 1      # seconds between retry attempts
+# scanning. 40 × 2-second retries (= 80 s) covers slow scanners without
+# leaving the app in a limbo state.
+_PS_APPLY_RETRIES = 40
+_PS_INITIAL_WAIT = 5    # seconds to wait for the Python process to exit
+_PS_RETRY_WAIT = 2      # seconds between retry attempts
 
 
 def apply_update(new_exe_path: str) -> None:
@@ -376,71 +382,121 @@ def apply_update(new_exe_path: str) -> None:
     def _ps(path: str) -> str:
         return "'" + path.replace("'", "''") + "'"
 
-    # Verbose PS1 that writes each step to %TEMP%\kfm_update.log so the
-    # user can diagnose failed restarts. Previously, if the restart
-    # silently failed (AV lock, policy, race), the user just saw the app
-    # close with no new window — no logs, no clue.
-    log_path = os.path.join(tempfile.gettempdir(), 'kfm_update.log')
+    log_path = os.path.join(tempfile.gettempdir(), UPDATE_LOG_NAME)
+    status_path = os.path.join(tempfile.gettempdir(), UPDATE_STATUS_NAME)
 
+    # The PS1 performs (roughly):
+    #   1. Verify the downloaded exe really exists and has non-trivial size —
+    #      catches the case where AV removed it between download and restart.
+    #   2. Rename running exe → .bak.  Rename of a running exe is always
+    #      allowed on NTFS.  If this fails the new exe is never touched.
+    #   3. Move (not copy) new → current name.  Move is atomic on NTFS when
+    #      source and dest are on the same volume — no half-written file.
+    #   4. Launch the new exe.  If it starts, we're done.
+    #   5. If any of 2..4 failed across all retries, rollback → launch old,
+    #      AND write a status file so the next-run App warns the user.
+    #      Without that, the user sees the old version popping back up and
+    #      can't tell why the update didn't stick.
     ps_script = f"""\
 $ErrorActionPreference = 'Continue'
-$log = {_ps(log_path)}
-$cur = {_ps(current_exe)}
-$new = {_ps(new_exe_path)}
-$bak = $cur + '.bak'
+$log     = {_ps(log_path)}
+$status  = {_ps(status_path)}
+$cur     = {_ps(current_exe)}
+$new     = {_ps(new_exe_path)}
+$bak     = $cur + '.bak'
 $bakName = [System.IO.Path]::GetFileName($bak)
-$ok = $false
+$ok      = $false
+$lastErr = ''
 
 function Say($msg) {{
     $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     Add-Content -Path $log -Value "[$ts] $msg" -Encoding UTF8 -ErrorAction SilentlyContinue
 }}
 
-Say "apply_update started"
+function WriteStatus($kind, $reason) {{
+    # Overwrite any stale status; Python reads + deletes this on next run.
+    Set-Content -Path $status -Value "$kind`n$reason`n$new" -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+}}
+
+Say "apply_update started (retries={_PS_APPLY_RETRIES}, initial_wait={_PS_INITIAL_WAIT}s)"
 Say "cur = $cur"
 Say "new = $new"
 Say "bak = $bak"
-Say "waiting {_PS_INITIAL_WAIT}s for parent to exit..."
-Start-Sleep -Seconds {_PS_INITIAL_WAIT}
 
-for ($i = 0; $i -lt {_PS_APPLY_RETRIES}; $i++) {{
-    try {{
-        if (Test-Path $bak) {{
+# Pre-flight: make sure the downloaded file is really there and non-empty.
+# Windows Defender sometimes quarantines freshly-downloaded exes between
+# the Python-side "file exists" check and the moment PS1 starts running.
+Start-Sleep -Seconds {_PS_INITIAL_WAIT}
+if (-not (Test-Path $new)) {{
+    $lastErr = "downloaded file disappeared before update (likely AV): $new"
+    Say $lastErr
+    WriteStatus 'VANISHED' $lastErr
+}} elseif ((Get-Item $new).Length -lt 1048576) {{
+    # Any real release is > 10 MB; under 1 MB means download was truncated
+    # or AV replaced the file with a stub.
+    $lastErr = "downloaded file looks truncated: $((Get-Item $new).Length) bytes"
+    Say $lastErr
+    WriteStatus 'TRUNCATED' $lastErr
+}} else {{
+    for ($i = 0; $i -lt {_PS_APPLY_RETRIES}; $i++) {{
+        try {{
+            if (Test-Path $bak) {{
+                Remove-Item $bak -Force -ErrorAction SilentlyContinue
+            }}
+            Say "attempt $($i+1)/{_PS_APPLY_RETRIES}: rename current -> $bakName"
+            Rename-Item -Path $cur -NewName $bakName -Force -ErrorAction Stop
+            Say "move $new -> $cur"
+            # Move-Item is atomic on the same volume — either succeeds fully
+            # or fails fully. No half-copied exe.
+            Move-Item -Path $new -Destination $cur -Force -ErrorAction Stop
+            # Sanity: size must match what we just moved.
+            $sz = (Get-Item $cur).Length
+            if ($sz -lt 1048576) {{
+                throw "size after move looks wrong: $sz bytes"
+            }}
+            Say "launching $cur ($sz bytes)"
+            Start-Process -FilePath $cur -WorkingDirectory (Split-Path $cur) -ErrorAction Stop
+            Start-Sleep -Seconds 1
             Remove-Item $bak -Force -ErrorAction SilentlyContinue
+            $ok = $true
+            Say "SUCCESS"
+            break
+        }} catch {{
+            $lastErr = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+            Say "attempt $($i+1) failed: $lastErr"
+            # If we managed to rename but not move/launch, undo rename for
+            # the next retry so subsequent iterations start from a clean state.
+            if ((Test-Path $bak) -and (-not (Test-Path $cur))) {{
+                try {{ Rename-Item -Path $bak -NewName ([System.IO.Path]::GetFileName($cur)) -ErrorAction SilentlyContinue }} catch {{}}
+            }}
+            Start-Sleep -Seconds {_PS_RETRY_WAIT}
         }}
-        Say "attempt $($i+1)/{_PS_APPLY_RETRIES}: rename current -> $bakName"
-        Rename-Item -Path $cur -NewName $bakName -Force -ErrorAction Stop
-        Say "copy $new -> $cur"
-        Copy-Item  -Path $new -Destination $cur  -Force -ErrorAction Stop
-        Say "launching $cur"
-        Start-Process -FilePath $cur -WorkingDirectory (Split-Path $cur)
-        Start-Sleep -Seconds 1
-        Remove-Item $bak -Force -ErrorAction SilentlyContinue
-        Remove-Item $new -Force -ErrorAction SilentlyContinue
-        $ok = $true
-        Say "SUCCESS"
-        break
-    }} catch {{
-        Say "attempt $($i+1) failed: $($_.Exception.Message)"
-        Start-Sleep -Seconds {_PS_RETRY_WAIT}
     }}
 }}
 
 if (-not $ok) {{
     Say "all retries exhausted, attempting rollback"
-    if (Test-Path $bak) {{
+    # Write status first so even a crashed rollback leaves evidence.
+    WriteStatus 'ROLLED_BACK' $lastErr
+    if ((Test-Path $bak) -and (-not (Test-Path $cur))) {{
         try {{
-            if (Test-Path $cur) {{
-                Remove-Item $cur -Force -ErrorAction SilentlyContinue
-            }}
             Rename-Item -Path $bak -NewName ([System.IO.Path]::GetFileName($cur)) -ErrorAction Stop
+            Say "rollback OK — launching old version"
             Start-Process -FilePath $cur -WorkingDirectory (Split-Path $cur)
-            Say "rollback OK — launched old version"
         }} catch {{
             Say "rollback failed: $($_.Exception.Message)"
+            WriteStatus 'ROLLBACK_FAILED' "$lastErr | rollback: $($_.Exception.Message)"
+        }}
+    }} elseif (Test-Path $cur) {{
+        # Current exe is still in place (rename didn't happen or was undone).
+        Say "current exe still present — launching it"
+        try {{
+            Start-Process -FilePath $cur -WorkingDirectory (Split-Path $cur)
+        }} catch {{
+            Say "couldn't launch current: $($_.Exception.Message)"
         }}
     }}
-    # Keep the downloaded new exe so the user can retry manually.
+    # Keep $new on disk so the user can retry manually.
 }}
 Say "script done (ok=$ok)"
 Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
@@ -541,3 +597,42 @@ Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
 def open_release_page(url: str = '') -> None:
     """Open the release page in the default browser."""
     webbrowser.open(url or RELEASES_PAGE)
+
+
+def pop_update_status() -> Optional[dict]:
+    """Return status info from a failed prior update attempt, or None.
+
+    Reads + deletes ``%TEMP%/kfm_update_status.txt`` which the PowerShell
+    script writes when the restart couldn't complete (AV lock, AppLocker,
+    truncated download, etc.). The App calls this once at startup; if a
+    dict comes back it shows the user a warning with the reason and a
+    link to the still-downloaded new exe, instead of silently relaunching
+    the old version as if nothing happened.
+
+    Returns:
+        ``{'kind': 'ROLLED_BACK'|'VANISHED'|'TRUNCATED'|'ROLLBACK_FAILED',
+           'reason': str, 'new_exe': str}`` or ``None`` if no status file.
+    """
+    status_path = os.path.join(tempfile.gettempdir(), UPDATE_STATUS_NAME)
+    if not os.path.exists(status_path):
+        return None
+    try:
+        with open(status_path, 'r', encoding='utf-8') as f:
+            body = f.read()
+    except OSError:
+        return None
+    finally:
+        # Whatever happens, consume it — don't spam the user on every launch.
+        try:
+            os.unlink(status_path)
+        except OSError:
+            pass
+
+    lines = [line.strip() for line in body.splitlines()]
+    while len(lines) < 3:
+        lines.append('')
+    kind, reason, new_exe = lines[0], lines[1], lines[2]
+    # Only recognise known kinds; anything else is noise from a stale file.
+    if kind not in ('ROLLED_BACK', 'VANISHED', 'TRUNCATED', 'ROLLBACK_FAILED'):
+        return None
+    return {'kind': kind, 'reason': reason, 'new_exe': new_exe}

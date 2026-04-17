@@ -543,3 +543,95 @@ def test_apply_update_ps_script_escapes_apostrophes_in_path(monkeypatch,
 
 # import os at the tail so test helpers above can use it
 import os  # noqa: E402
+
+
+# ── pop_update_status ──────────────────────────────────────────────────────
+#
+# Status file is PS1's way of telling the next-run Python process that
+# the restart failed. Python reads + deletes + shows a messagebox.
+# Guarantees: called twice in a row, the second call sees nothing
+# (consume-on-read). Corrupt/unknown content returns None.
+
+
+def _status_path(tmp_path):
+    """Put UPDATE_STATUS_NAME into an isolated tmpdir via monkeypatching."""
+    return tmp_path / updater.UPDATE_STATUS_NAME
+
+
+def test_pop_update_status_returns_none_when_file_absent(monkeypatch, tmp_path):
+    monkeypatch.setattr(updater.tempfile, 'gettempdir', lambda: str(tmp_path))
+    assert updater.pop_update_status() is None
+
+
+def test_pop_update_status_parses_valid_rolled_back(monkeypatch, tmp_path):
+    monkeypatch.setattr(updater.tempfile, 'gettempdir', lambda: str(tmp_path))
+    sp = _status_path(tmp_path)
+    sp.write_text('ROLLED_BACK\nAV locked file\nC:\\Temp\\new.exe\n',
+                  encoding='utf-8')
+    info = updater.pop_update_status()
+    assert info == {
+        'kind':    'ROLLED_BACK',
+        'reason':  'AV locked file',
+        'new_exe': 'C:\\Temp\\new.exe',
+    }
+    # Consume-on-read: second call returns None because the file is gone.
+    assert not sp.exists()
+    assert updater.pop_update_status() is None
+
+
+@pytest.mark.parametrize('kind', ['VANISHED', 'TRUNCATED', 'ROLLBACK_FAILED'])
+def test_pop_update_status_recognises_all_known_kinds(monkeypatch, tmp_path, kind):
+    monkeypatch.setattr(updater.tempfile, 'gettempdir', lambda: str(tmp_path))
+    _status_path(tmp_path).write_text(f'{kind}\nsome reason\n\n',
+                                       encoding='utf-8')
+    info = updater.pop_update_status()
+    assert info is not None
+    assert info['kind'] == kind
+
+
+def test_pop_update_status_rejects_unknown_kind(monkeypatch, tmp_path):
+    """An unknown first line (e.g. stale file from an older build) should
+    be dropped silently, not shown to the user as an alarming 'GARBAGE'."""
+    monkeypatch.setattr(updater.tempfile, 'gettempdir', lambda: str(tmp_path))
+    sp = _status_path(tmp_path)
+    sp.write_text('GARBAGE_FROM_OLDER_VERSION\nhello\nworld\n',
+                  encoding='utf-8')
+    assert updater.pop_update_status() is None
+    # It's still consumed so the same stale content doesn't linger.
+    assert not sp.exists()
+
+
+def test_pop_update_status_handles_short_file(monkeypatch, tmp_path):
+    """Lines < 3 should still parse — missing fields become empty strings."""
+    monkeypatch.setattr(updater.tempfile, 'gettempdir', lambda: str(tmp_path))
+    _status_path(tmp_path).write_text('ROLLED_BACK\n', encoding='utf-8')
+    info = updater.pop_update_status()
+    assert info == {
+        'kind':    'ROLLED_BACK',
+        'reason':  '',
+        'new_exe': '',
+    }
+
+
+def test_apply_update_ps_writes_status_on_failure_path(monkeypatch, tmp_path):
+    """Regression guard: verify the PS1 we emit actually contains the
+    WriteStatus calls and the rollback-then-status-file sequence. Without
+    this the user is stuck seeing "update available" forever because PS1
+    silently relaunched the old version with no explanation."""
+    popen_calls, _ = _patched_apply(monkeypatch, is_frozen=True)
+    fake_ps = str(tmp_path / 'fake.ps1')
+    fd = os.open(fake_ps, os.O_WRONLY | os.O_CREAT, 0o600)
+    monkeypatch.setattr(updater.tempfile, 'mkstemp',
+                         lambda prefix='', suffix='', dir=None: (fd, fake_ps))
+    updater.apply_update('C:\\new.exe')
+
+    ps_text = open(fake_ps, 'r', encoding='utf-8-sig').read()
+    # All four recognised failure kinds must be writable.
+    assert 'ROLLED_BACK' in ps_text
+    assert 'VANISHED' in ps_text
+    assert 'TRUNCATED' in ps_text
+    assert 'ROLLBACK_FAILED' in ps_text
+    # Pre-flight size check (catches AV-truncated downloads).
+    assert '(Get-Item $new).Length' in ps_text
+    # Move-Item is the atomic primitive we rely on, not Copy+Remove.
+    assert 'Move-Item' in ps_text

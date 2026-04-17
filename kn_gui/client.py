@@ -287,17 +287,22 @@ class KeeneticClient:
                     f'(Keenetic limit ~{MAX_ENTRIES_PER_GROUP}/group): '
                     + ', '.join(f'{n}({len(e)})' for n, e in chunks))
 
+        # Tag the description so list_managed_fqdn_groups() can later
+        # pick out groups we created vs. user-configured ones.
+        from .constants import MANAGED_INTERFACE_TAG
+        tagged_desc = (f'{MANAGED_INTERFACE_TAG} {description}'.strip()
+                        if description else MANAGED_INTERFACE_TAG)
+
         # ── Push each chunk to the router ──────────────────────────────
         for chunk_name, chunk_entries in chunks:
             try:
                 self.run_expect(f'object-group fqdn {chunk_name}')
-                if description:
-                    safe = _sanitize_cli_value(description).replace('"', '').strip()
-                    if safe:
-                        try:
-                            self.run_expect(f'description "{safe}"')
-                        except RuntimeError as e:
-                            errs.append(f'{chunk_name} description: {e}')
+                safe = _sanitize_cli_value(tagged_desc).replace('"', '').strip()
+                if safe:
+                    try:
+                        self.run_expect(f'description "{safe}"')
+                    except RuntimeError as e:
+                        errs.append(f'{chunk_name} description: {e}')
                 for entry in chunk_entries:
                     try:
                         self.run_expect(f'include {entry}')
@@ -346,6 +351,27 @@ class KeeneticClient:
 
     def save_config(self) -> str:
         return self.run_expect('system configuration save', timeout=15.0)
+
+    def list_managed_fqdn_groups(self) -> list[dict]:
+        """Return FQDN groups whose description carries MANAGED_INTERFACE_TAG.
+
+        Each entry: {'name': str, 'description': str, 'entries': list[str]}.
+        Used by the UI to offer a one-click cleanup of groups this app
+        created without touching user-configured ones.
+        """
+        from .constants import MANAGED_INTERFACE_TAG
+        from .state import parse_running_config
+        cfg = self.running_config()
+        parsed = parse_running_config(cfg)
+        out: list[dict] = []
+        for name, desc in parsed.get('group_descriptions', {}).items():
+            if MANAGED_INTERFACE_TAG in desc:
+                out.append({
+                    'name': name,
+                    'description': desc,
+                    'entries': parsed['groups'].get(name, []),
+                })
+        return out
 
     # ── SSTP interface provisioning ───────────────────────────────────────
     def find_free_sstp_index(self, existing: list[str]) -> int:

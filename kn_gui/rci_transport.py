@@ -254,16 +254,19 @@ class KeeneticRCIClient:
                     f'(Keenetic limit ~{MAX_ENTRIES_PER_GROUP}/group): '
                     + ', '.join(f'{n}({len(e)})' for n, e in chunks))
 
+        from .constants import MANAGED_INTERFACE_TAG
+        tagged_desc = (f'{MANAGED_INTERFACE_TAG} {description}'.strip()
+                        if description else MANAGED_INTERFACE_TAG)
+
         for chunk_name, chunk_entries in chunks:
             try:
                 self.run_expect(f'object-group fqdn {chunk_name}')
-                if description:
-                    safe = _sanitize_cli_value(description).replace('"', '').strip()
-                    if safe:
-                        try:
-                            self.run_expect(f'description "{safe}"')
-                        except RuntimeError as e:
-                            errs.append(f'{chunk_name} description: {e}')
+                safe = _sanitize_cli_value(tagged_desc).replace('"', '').strip()
+                if safe:
+                    try:
+                        self.run_expect(f'description "{safe}"')
+                    except RuntimeError as e:
+                        errs.append(f'{chunk_name} description: {e}')
                 for entry in chunk_entries:
                     try:
                         self.run_expect(f'include {entry}')
@@ -306,6 +309,26 @@ class KeeneticRCIClient:
 
     def save_config(self) -> str:
         return self.run_expect('system configuration save', timeout=15.0)
+
+    def list_managed_fqdn_groups(self) -> list[dict]:
+        """Return FQDN groups tagged with MANAGED_INTERFACE_TAG.
+
+        Identical semantics to the Telnet client's implementation — see
+        `client.KeeneticClient.list_managed_fqdn_groups`.
+        """
+        from .constants import MANAGED_INTERFACE_TAG
+        from .state import parse_running_config
+        cfg = self.running_config()
+        parsed = parse_running_config(cfg)
+        out: list[dict] = []
+        for name, desc in parsed.get('group_descriptions', {}).items():
+            if MANAGED_INTERFACE_TAG in desc:
+                out.append({
+                    'name': name,
+                    'description': desc,
+                    'entries': parsed['groups'].get(name, []),
+                })
+        return out
 
     # ── SSTP interface provisioning ───────────────────────────────────────
 

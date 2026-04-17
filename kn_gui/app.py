@@ -1141,6 +1141,93 @@ class App(tk.Tk):
 
         self.worker.run(list_them, on_done=after_list)
 
+    # ── Delete managed FQDN groups ─────────────────────────────────────
+    def _on_delete_managed_fqdn_groups(self):
+        """Bulk-remove FQDN groups whose description carries the
+        MANAGED_INTERFACE_TAG. Mirrors the "Delete managed VPN" flow:
+        list → confirm dialog → delete → save → refresh state."""
+        if not self._ensure_connected():
+            return
+
+        client = self.client
+
+        def list_them():
+            return client.list_managed_fqdn_groups()
+
+        def after_list(result, err):
+            if err is not None:
+                self.log(f'Не удалось получить список FQDN-групп: {err}', 'err')
+                return
+            managed: list[dict] = result or []
+            if not managed:
+                messagebox.showinfo(
+                    APP_NAME,
+                    'На роутере нет FQDN-групп, созданных этим приложением.\n\n'
+                    'Группы, добавленные вручную в веб-UI Keenetic, не затрагиваются.',
+                )
+                return
+
+            lines = '\n'.join(
+                f'  • {g["name"]}  ({len(g["entries"])} записей)  —  '
+                f'{g["description"][:60]}'
+                for g in managed)
+            if not messagebox.askyesno(
+                    APP_NAME,
+                    f'Удалить {len(managed)} FQDN-группу(ы), созданных приложением?\n\n'
+                    f'{lines}\n\n'
+                    'Будут также удалены соответствующие dns-proxy-маршруты.\n'
+                    'Пользовательские группы не затрагиваются.'):
+                return
+
+            def remove():
+                removed: list[str] = []
+                errors: list[tuple[str, str]] = []
+                for g in managed:
+                    name = g.get('name', '')
+                    if not name:
+                        continue
+                    try:
+                        # delete_fqdn_group also cleans up split-siblings
+                        # (name_2 … name_50) and the dns-proxy route.
+                        client.delete_fqdn_group(name)
+                        removed.append(name)
+                    except Exception as e:  # noqa: BLE001
+                        errors.append((name, str(e)))
+                try:
+                    client.save_config()
+                except Exception as e:  # noqa: BLE001
+                    errors.append(('save_config', str(e)))
+                cfg = client.running_config()
+                return removed, errors, cfg
+
+            def after_remove(res, err):
+                if err is not None:
+                    self.log(f'Ошибка при удалении: {err}', 'err')
+                    messagebox.showerror(APP_NAME, str(err))
+                    return
+                removed, errors, cfg = res
+                self.state = parse_running_config(cfg)
+                for n in removed:
+                    self.log(f'  ✓ удалена группа {n}', 'ok')
+                for n, e in errors:
+                    self.log(f'  ✗ {n}: {e}', 'err')
+                self._refresh_state_view()
+                self._populate_services()
+                self._update_warnings()
+                if errors:
+                    messagebox.showwarning(
+                        APP_NAME,
+                        f'Удалено: {len(removed)}\nОшибок: {len(errors)}\n\n'
+                        'Подробности — в журнале.')
+                else:
+                    messagebox.showinfo(
+                        APP_NAME,
+                        f'Удалено {len(removed)} FQDN-группу(ы).')
+
+            self.worker.run(remove, on_done=after_remove)
+
+        self.worker.run(list_them, on_done=after_list)
+
     def _build_vpngate_live_tab(self):
         from .tabs import vpngate as _vpn_tab
         _vpn_tab.build_live(self)

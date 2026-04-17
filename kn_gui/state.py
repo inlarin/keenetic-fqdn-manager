@@ -29,10 +29,15 @@ class IpRoute:
 
 
 def parse_running_config(cfg: str) -> dict:
-    """Parse show running-config into {'groups', 'dns_routes', 'ip_routes'}.
-    Dicts are retained for easy UI rendering; dataclasses above are optional
-    consumers. groups is dict[name] -> list[include entries]."""
+    """Parse show running-config into {'groups', 'group_descriptions',
+    'dns_routes', 'ip_routes'}.
+
+    `group_descriptions` maps `name → description string` (may be empty).
+    Used by `list_managed_fqdn_groups()` to pick out app-created groups
+    by the MANAGED_INTERFACE_TAG marker in the description field.
+    """
     groups: dict[str, list[str]] = {}
+    group_descriptions: dict[str, str] = {}
     current_group: Optional[str] = None
     dns_routes: list[dict] = []
     ip_routes: list[dict] = []
@@ -56,6 +61,13 @@ def parse_running_config(cfg: str) -> dict:
         if current_group and stripped.startswith('include '):
             groups[current_group].append(stripped.split(' ', 1)[1])
             continue
+        if current_group and stripped.startswith('description '):
+            # description may be quoted or bare; strip surrounding quotes.
+            desc_text = stripped.split(' ', 1)[1].strip()
+            if desc_text.startswith('"') and desc_text.endswith('"'):
+                desc_text = desc_text[1:-1]
+            group_descriptions[current_group] = desc_text
+            continue
         if stripped == 'dns-proxy':
             in_dns_proxy = True
             dns_proxy_indent = indent
@@ -77,7 +89,12 @@ def parse_running_config(cfg: str) -> dict:
             ip_routes.append({'network': m.group(1), 'mask': m.group(2),
                               'interface': m.group(3), 'auto': m.group(4) == 'auto',
                               'reject': m.group(5) == 'reject'})
-    return {'groups': groups, 'dns_routes': dns_routes, 'ip_routes': ip_routes}
+    return {
+        'groups': groups,
+        'group_descriptions': group_descriptions,
+        'dns_routes': dns_routes,
+        'ip_routes': ip_routes,
+    }
 
 
 def svc_includes(svc: dict) -> set[str]:

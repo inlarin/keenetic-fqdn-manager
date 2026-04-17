@@ -253,3 +253,74 @@ def test_delete_interface_sends_no_interface(mock_rci):
     mock_rci.delete_interface('SSTP1')
     calls = [c.args[0] for c in mock_rci._rci.parse.call_args_list]
     assert 'no interface SSTP1' in calls
+
+
+# ── Managed FQDN groups tagging + listing ─────────────────────────────────
+
+def test_create_fqdn_group_tags_description(mock_rci):
+    """FQDN groups, like SSTP interfaces, must carry the management tag
+    in their description — that's how list_managed_fqdn_groups() finds
+    app-owned groups to clean up."""
+    from kn_gui.constants import MANAGED_INTERFACE_TAG
+    mock_rci._rci.parse.return_value = {
+        'parse': '', 'prompt': '(config)>', 'status': [],
+    }
+    mock_rci.create_fqdn_group('telegram', ['t.me', 'telegram.org'],
+                                description='Telegram (vpngate)')
+    calls = [c.args[0] for c in mock_rci._rci.parse.call_args_list]
+    desc_calls = [c for c in calls if c.startswith('description ')]
+    assert len(desc_calls) >= 1
+    assert MANAGED_INTERFACE_TAG in desc_calls[0]
+    assert 'Telegram (vpngate)' in desc_calls[0]
+
+
+def test_create_fqdn_group_without_description_still_tagged(mock_rci):
+    """Even with empty description= we still emit the tag alone, so the
+    group can be recognised as ours later."""
+    from kn_gui.constants import MANAGED_INTERFACE_TAG
+    mock_rci._rci.parse.return_value = {
+        'parse': '', 'prompt': '(config)>', 'status': [],
+    }
+    mock_rci.create_fqdn_group('foo', ['a.com'])
+    calls = [c.args[0] for c in mock_rci._rci.parse.call_args_list]
+    desc_calls = [c for c in calls if c.startswith('description ')]
+    assert any(MANAGED_INTERFACE_TAG in c for c in desc_calls)
+
+
+def test_list_managed_fqdn_groups_filters_by_tag(mock_rci):
+    """Mix of user + app groups, we return only app ones."""
+    from kn_gui.constants import MANAGED_INTERFACE_TAG
+    # Stub running_config() to produce a mini config with mixed groups.
+    mock_rci.running_config = MagicMock(return_value=(
+        'object-group fqdn mine_1\n'
+        f' description "{MANAGED_INTERFACE_TAG} Telegram"\n'
+        ' include t.me\n'
+        ' include telegram.org\n'
+        '!\n'
+        'object-group fqdn user_foo\n'
+        ' description "my custom group"\n'
+        ' include example.com\n'
+        '!\n'
+        'object-group fqdn mine_2\n'
+        f' description "{MANAGED_INTERFACE_TAG} YouTube"\n'
+        ' include youtube.com\n'
+        '!\n'
+    ))
+    managed = mock_rci.list_managed_fqdn_groups()
+    names = sorted(g['name'] for g in managed)
+    assert names == ['mine_1', 'mine_2']
+    # And we get the descriptions + entries.
+    mine1 = next(g for g in managed if g['name'] == 'mine_1')
+    assert MANAGED_INTERFACE_TAG in mine1['description']
+    assert 'Telegram' in mine1['description']
+    assert sorted(mine1['entries']) == ['t.me', 'telegram.org']
+
+
+def test_list_managed_fqdn_groups_empty_when_none_tagged(mock_rci):
+    mock_rci.running_config = MagicMock(return_value=(
+        'object-group fqdn user_only\n'
+        ' description "nothing to see"\n'
+        ' include example.com\n'
+        '!\n'
+    ))
+    assert mock_rci.list_managed_fqdn_groups() == []

@@ -21,6 +21,9 @@ def build(app) -> None:
                command=app._on_delete_selected).pack(side='left', padx=2)
     ttk.Button(top, text='Сохранить конфиг',
                command=app._on_save_config).pack(side='left', padx=12)
+    # Right side: bulk cleanup of groups tagged as ours.
+    ttk.Button(top, text='🗑 Удалить созданные приложением FQDN-группы',
+               command=app._on_delete_managed_fqdn_groups).pack(side='right', padx=2)
     app.state_summary_var = tk.StringVar(value='')
     ttk.Label(top, textvariable=app.state_summary_var, foreground='#555',
               style='Status.TLabel').pack(side='right', padx=4)

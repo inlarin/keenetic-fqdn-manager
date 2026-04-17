@@ -6,7 +6,57 @@ from kn_gui.state import (compute_apply_plan, parse_running_config,
 
 def test_parse_empty():
     st = parse_running_config('')
-    assert st == {'groups': {}, 'dns_routes': [], 'ip_routes': []}
+    assert st == {'groups': {}, 'group_descriptions': {},
+                   'dns_routes': [], 'ip_routes': []}
+
+
+def test_parse_group_description_stripped_of_quotes():
+    """Descriptions come back as the inner string only — outer quotes
+    from `description "..."` are removed so downstream tag-matching
+    works on the raw content."""
+    cfg = (
+        'object-group fqdn telegram\n'
+        '    description "[kn-gui] Telegram"\n'
+        '    include t.me\n'
+        '!\n'
+    )
+    st = parse_running_config(cfg)
+    assert st['group_descriptions'] == {'telegram': '[kn-gui] Telegram'}
+
+
+def test_parse_group_description_without_quotes():
+    cfg = (
+        'object-group fqdn foo\n'
+        '    description bare-description-no-quotes\n'
+        '    include example.com\n'
+        '!\n'
+    )
+    st = parse_running_config(cfg)
+    assert st['group_descriptions'] == {'foo': 'bare-description-no-quotes'}
+
+
+def test_parse_multiple_groups_mixed_descriptions():
+    cfg = (
+        'object-group fqdn a\n'
+        '    description "[kn-gui] first"\n'
+        '    include a.com\n'
+        '!\n'
+        'object-group fqdn b\n'
+        '    include b.com\n'  # no description on this one
+        '!\n'
+        'object-group fqdn c\n'
+        '    description "user made"\n'
+        '    include c.com\n'
+        '!\n'
+    )
+    st = parse_running_config(cfg)
+    # Only groups that actually had a description key appear in the map.
+    assert st['group_descriptions'] == {
+        'a': '[kn-gui] first',
+        'c': 'user made',
+    }
+    # All three still listed in groups/.
+    assert set(st['groups']) == {'a', 'b', 'c'}
 
 
 def test_parse_single_group_and_route():

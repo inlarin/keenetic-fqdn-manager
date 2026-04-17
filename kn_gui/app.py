@@ -88,6 +88,7 @@ class App(tk.Tk):
 
         self.svc_checked: dict[str, bool] = {}
         self.exclusive_var = tk.BooleanVar(value=bool(self.ui_cfg.get('exclusive', True)))
+        self._discover_cancel: Optional[threading.Event] = None
 
         self._init_style()
         self._build_menu()
@@ -101,6 +102,9 @@ class App(tk.Tk):
         logging.getLogger('kn_gui.rci_client').addHandler(self._rci_log_handler)
         # Non-blocking update check at startup.
         self._check_update_async()
+        # First-run UX: auto-scan LAN so the user doesn't have to think
+        # about which subnet Keenetic is on.
+        self._autodiscover_on_first_run()
 
     def _build_menu(self):
         menubar = tk.Menu(self)
@@ -418,9 +422,16 @@ class App(tk.Tk):
         self.status_label.grid(row=0, column=1, sticky='w', padx=(0, 12))
 
         ttk.Label(wrap, text='Адрес:').grid(row=0, column=2, sticky='e', padx=(8, 4))
+        host_frame = ttk.Frame(wrap)
+        host_frame.grid(row=0, column=3, sticky='w')
         self.host_var = tk.StringVar(value=self.ui_cfg.get('last_host', DEFAULT_ROUTER))
-        self.host_entry = ttk.Entry(wrap, textvariable=self.host_var, width=18)
-        self.host_entry.grid(row=0, column=3, sticky='w')
+        self.host_entry = ttk.Entry(host_frame, textvariable=self.host_var, width=16)
+        self.host_entry.pack(side='left')
+        # Magnifier button that launches LAN auto-discovery. Single-click
+        # in idle state; disabled during the scan itself.
+        self.btn_discover = ttk.Button(host_frame, text='🔍', width=3,
+                                        command=self._on_discover_click)
+        self.btn_discover.pack(side='left', padx=(2, 0))
 
         ttk.Label(wrap, text='Логин:').grid(row=0, column=4, sticky='e', padx=(12, 4))
         self.user_var = tk.StringVar(value=self.ui_cfg.get('last_user', DEFAULT_USER))
@@ -1112,6 +1123,144 @@ class App(tk.Tk):
         from .tabs import catalog as _catalog_tab
         _catalog_tab.build(self)
 
+    # ── Auto-discovery ──────────────────────────────────────────────────
+
+    def _on_discover_click(self):
+        """Scan LAN for a Keenetic and pre-fill the host field.
+
+        Runs in the Worker — non-blocking. On one hit fills the field
+        silently; on many hits opens a small picker dialog. On zero
+        hits — informs the user with a short message box.
+        """
+        if self.conn_state == ConnState.CONNECTED:
+            return  # don't interfere with an active session
+        if self.worker.busy():
+            return
+        self.btn_discover.configure(state='disabled')
+        self.log('Поиск Keenetic в локальной сети…', 'info')
+
+        last = self.ui_cfg.get('last_host') or self.host_var.get().strip()
+        cancel_event = threading.Event()
+        # Remember the cancel event so _on_close can trip it.
+        self._discover_cancel = cancel_event
+
+        def _progress(msg: str) -> None:
+            self.ui_queue.put(('log', ('info', f'  {msg}')))
+
+        def _do():
+            from .discovery import find_keenetic
+            return find_keenetic(
+                last_host=last,
+                cancel=cancel_event,
+                on_progress=_progress,
+            )
+
+        def _done(result, err):
+            try:
+                self.btn_discover.configure(state='normal')
+            except Exception:
+                pass
+            self._discover_cancel = None
+            if err is not None:
+                self.log(f'Поиск не удался: {err}', 'err')
+                return
+            hits = result or []
+            if not hits:
+                messagebox.showinfo(
+                    f'{APP_NAME} — поиск роутера',
+                    'Keenetic в локальной сети не найден.\n\n'
+                    'Проверьте, что вы подключены к Wi-Fi / кабелю роутера, '
+                    'и введите адрес вручную.')
+                return
+            if len(hits) == 1:
+                h = hits[0]
+                self.host_var.set(h['host'])
+                realm = f', realm={h["realm"]}' if h.get('realm') else ''
+                self.log(
+                    f'Найден Keenetic: {h["host"]} ({h["rtt_ms"]} мс{realm})',
+                    'ok')
+                # Auto-focus the password field for smoother onboarding.
+                try:
+                    self.pass_entry.focus_set()
+                except Exception:
+                    pass
+                return
+            self._show_discovery_picker(hits)
+
+        self.worker.run(_do, on_done=_done)
+
+    def _show_discovery_picker(self, hits: list[dict]) -> None:
+        """Small modal with a Treeview of found routers. Double-click or
+        'Выбрать' picks one and writes it to the host field."""
+        dlg = tk.Toplevel(self)
+        dlg.title(f'{APP_NAME} — найдено несколько устройств')
+        dlg.resizable(False, False)
+        dlg.transient(self)
+
+        ttk.Label(
+            dlg,
+            text=f'Найдено устройств: {len(hits)}. '
+                 'Выберите один и нажмите «Выбрать».',
+            padding=(12, 8)).pack(anchor='w')
+
+        cols = ('host', 'realm', 'rtt')
+        tree = ttk.Treeview(dlg, columns=cols, show='headings',
+                             selectmode='browse', height=min(10, len(hits)))
+        tree.heading('host', text='Адрес')
+        tree.heading('realm', text='Realm')
+        tree.heading('rtt', text='RTT, мс')
+        tree.column('host', width=160, anchor='w')
+        tree.column('realm', width=140, anchor='w')
+        tree.column('rtt', width=80, anchor='e')
+        for h in hits:
+            tree.insert('', 'end',
+                         values=(h['host'], h.get('realm', ''), h['rtt_ms']))
+        tree.pack(fill='x', padx=12, pady=(0, 8))
+        # Select the first (fastest) entry by default.
+        first = tree.get_children()
+        if first:
+            tree.selection_set(first[0])
+            tree.focus(first[0])
+
+        def _pick():
+            sel = tree.selection()
+            if not sel:
+                return
+            values = tree.item(sel[0], 'values')
+            if values:
+                self.host_var.set(values[0])
+                self.log(f'Выбран Keenetic: {values[0]}', 'ok')
+            dlg.destroy()
+            try:
+                self.pass_entry.focus_set()
+            except Exception:
+                pass
+
+        tree.bind('<Double-Button-1>', lambda _e: _pick())
+
+        btns = ttk.Frame(dlg, padding=(12, 0, 12, 12))
+        btns.pack(fill='x')
+        ttk.Button(btns, text='Выбрать', command=_pick,
+                   style='Accent.TButton').pack(side='right', padx=(6, 0))
+        ttk.Button(btns, text='Отмена',
+                   command=dlg.destroy).pack(side='right')
+
+        dlg.update_idletasks()
+        px = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
+        py = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry(f'+{px}+{py}')
+        dlg.grab_set()
+
+    def _autodiscover_on_first_run(self) -> None:
+        """If this is the user's first launch (no saved last_host) and the
+        field still shows the default address, automatically kick off a
+        discovery scan 500 ms after the window is drawn."""
+        if self.ui_cfg.get('last_host'):
+            return   # returning user — they already have a host configured
+        if self.host_var.get().strip() != DEFAULT_ROUTER:
+            return   # user already edited the field
+        self.after(500, self._on_discover_click)
+
     # ── Connection management ───────────────────────────────────────────
     def _on_connect_click(self):
         if self.conn_state == ConnState.CONNECTED:
@@ -1572,6 +1721,11 @@ class App(tk.Tk):
             save_ui_config(self.ui_cfg)
         except Exception:
             pass
+        # Cancel a running LAN scan so 128 worker threads don't keep the
+        # process alive past window close.
+        cancel_event = getattr(self, '_discover_cancel', None)
+        if cancel_event is not None:
+            cancel_event.set()
         if self.client is not None:
             try:
                 self.client.close()

@@ -1,64 +1,216 @@
 # Keenetic FQDN Manager
 
-GUI для управления FQDN-маршрутами и IP-маршрутами на роутерах Keenetic (и OEM-форках типа Netcraze). Один `.exe`, без зависимостей.
+<p align="center">
+  <img src="docs/screenshots/01-connect.png" alt="Keenetic FQDN Manager — главное окно" width="720">
+</p>
 
-## Файлы
+<p align="center">
+  <a href="https://github.com/inlarin/keenetic-fqdn-manager/releases/latest">
+    <img alt="Latest release" src="https://img.shields.io/github/v/release/inlarin/keenetic-fqdn-manager?label=release">
+  </a>
+  <a href="https://github.com/inlarin/keenetic-fqdn-manager/actions/workflows/test.yml">
+    <img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/inlarin/keenetic-fqdn-manager/test.yml?label=tests">
+  </a>
+  <a href="https://github.com/inlarin/keenetic-fqdn-manager/releases/latest">
+    <img alt="Windows exe" src="https://img.shields.io/badge/Windows-.exe-0078D6?logo=windows">
+  </a>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.10%E2%80%933.13-3776AB?logo=python&logoColor=white">
+</p>
 
-- `dist/KeeneticFqdnManager.exe` — готовое приложение (~12 МБ), самодостаточное
-- `kn_gui/` — пакет-исходник. Точка входа — `main.py`, UI собирается в `kn_gui/app.py` (App + вкладки). Логика бэкграунд-потока вынесена в `kn_gui/worker.py`; RCI HTTP-транспорт — в `kn_gui/rci_client.py`
-- `data/services.json` — встроенный каталог сервисов
-- `build.bat` — скрипт пересборки через PyInstaller (см. `KeeneticFqdnManager.spec`)
-- Настройки UI (геометрия окна, последний host/user/interface) сохраняются в `%APPDATA%\KeeneticFqdnManager\ui.json`. Пароль **никогда** не сохраняется.
+Десктопное приложение для Windows, которое берёт на себя рутину настройки
+**FQDN-маршрутизации** на роутерах Keenetic (и OEM-форках типа Netcraze
+Hopper): создаёт `object-group fqdn`, привязывает их к VPN-интерфейсу
+через `dns-proxy route`, включает **kill switch** и заботится о том,
+чтобы большие списки корректно разбивались на группы по лимиту роутера.
 
-## Использование
+Один `.exe` на 12 МБ, без установки и без зависимостей. Python Tkinter
+внутри, весь сетевой слой — stdlib.
 
-1. Запустить `KeeneticFqdnManager.exe`.
-2. Ввести host / user / пароль → `Connect` (или Enter в поле пароля). Статус-точка слева обновится: жёлтая → зелёная.
-3. В dropdown `Interface` выбрать VPN-туннель (приложение предложит подключённый SSTP/Wireguard/OpenVPN автоматически).
-4. Вкладка **Services** — чекбоксы слева, детали выбранного сервиса справа. Применённые уже на роутере помечены `● iface (kill)`. Apply создаёт/обновляет.
-5. Вкладка **Current state** — видно все FQDN-группы (📁) и IP-маршруты (🌐) с пометкой `exclusive (kill switch)` или `unprotected`.
-6. Вкладка **Catalog** — статистика текущего каталога + импорт с URL/файла.
+---
+
+## Что умеет
+
+<table>
+<tr><td width="55%">
+
+### Работа с сервисами
+- **72 сервиса** в встроенном каталоге: AI (Claude, ChatGPT, Gemini, Grok,
+  Perplexity, Cursor…), видео (YouTube, Netflix, Twitch, Vimeo),
+  мессенджеры (Telegram, WhatsApp, Signal, Viber), соцсети, Dev-сервисы
+  (GitHub, GitLab, Docker Hub), платёжные и т.д.
+- **Авто-обновление доменов** из upstream-источников (v2fly community
+  lists, Cloudflare / GitHub / Telegram / AWS CIDR-фиды).
+- **Kill switch** — при падении VPN трафик не утекает через провайдера,
+  а дропается.
+- **Разрешение расхождений**: подсвечивает сервисы, у которых
+  содержимое группы на роутере отличается от каталога, и даёт применить
+  в один клик.
+
+</td><td>
+
+<img src="docs/screenshots/02-services.png" alt="Вкладка Сервисы" width="440">
+
+</td></tr>
+
+<tr><td>
+
+<img src="docs/screenshots/03-state.png" alt="Вкладка Состояние роутера" width="440">
+
+</td><td>
+
+### Мониторинг состояния
+- Видно **все FQDN-группы** и IP-маршруты, привязанные к выбранному
+  интерфейсу, в виде дерева.
+- Быстрый `F5` для обновления, удаление групп прямо из UI.
+- Столбец «Состояние» показывает: `auto, kill switch` — всё защищено;
+  `не привязана к маршруту` — есть проблема.
+- Индикатор транспорта (**RCI HTTP** / Telnet-fallback) — видно,
+  по какому протоколу идёт обмен.
+
+</td></tr>
+
+<tr><td width="55%">
+
+### VPN Gate встроенный
+- **40 серверов VPN Gate** в комплекте (Япония, Корея, Вьетнам,
+  Таиланд) — работают даже когда сайт vpngate.net заблокирован.
+- Параллельный тест доступности (TCP/443, 2с на каждый).
+- Один клик — создаётся SSTP-интерфейс на роутере, логин/пароль
+  `vpn/vpn` прописываются автоматически.
+- Отдельная вкладка для «живого» списка с vpngate.net, фильтры по
+  стране / пингу / скорости / политике логов.
+
+</td><td>
+
+<img src="docs/screenshots/04-vpngate.png" alt="VPN Gate" width="440">
+
+</td></tr>
+
+<tr><td>
+
+<img src="docs/screenshots/06-update-available.png" alt="Диалог обновления" width="440">
+
+</td><td>
+
+### Самообновление
+- При запуске тихо проверяет новый релиз на GitHub (один HTTPS-запрос).
+- Предлагает скачать и перезапустить, **проверяет SHA-256** контрольную
+  сумму `.exe` перед применением.
+- Если что-то пошло не так — старая версия восстанавливается из
+  резервной копии автоматически.
+- Отключается флагом — просто игнорируйте диалог.
+
+</td></tr>
+</table>
+
+---
+
+## Установка
+
+1. Скачайте последнюю **`KeeneticFqdnManager.exe`** со
+   [страницы релизов](https://github.com/inlarin/keenetic-fqdn-manager/releases/latest).
+   Размер — около 12 МБ.
+2. Запустите. Установка не требуется.
+3. Настройки UI (последний адрес, логин, интерфейс) сохраняются в
+   `%APPDATA%\KeeneticFqdnManager\ui.json`. **Пароль никогда не
+   сохраняется** между сессиями.
+
+> **Windows SmartScreen** может предупредить о «неизвестном издателе»
+> — это ожидаемо для .exe без EV-сертификата. Кнопка «Подробнее» →
+> «Выполнить в любом случае».
+
+## Первый запуск
+
+1. **Адрес роутера** — кнопка «🔍» рядом с полем адреса автоматически
+   найдёт Keenetic в локальной сети (1–3 секунды).
+   Если нужно ввести вручную — обычно это `192.168.1.1`.
+2. **Логин** — по умолчанию `admin`.
+3. **Пароль** — тот, что стоит в веб-UI роутера.
+4. Enter в поле пароля (или кнопка «Подключить»).
+5. В выпадающем списке «Интерфейс» выбрать VPN-туннель
+   (SSTP/Wireguard/OpenVPN/L2TP). Приложение само предложит
+   активный, если такой есть.
 
 ## Горячие клавиши
 
-| Клавиша | Действие |
-|---|---|
-| `Enter` в поле пароля | Connect |
-| `Ctrl+Enter` | Apply selected |
-| `F5` | Refresh state |
-| `Esc` | Disconnect |
+| Клавиша         | Действие                     |
+|-----------------|------------------------------|
+| `Enter` в пароле | Подключиться                |
+| `Ctrl+Enter`    | Применить выбранные сервисы |
+| `F5`            | Обновить состояние с роутера |
+| `Esc`           | Отключиться                  |
+| `Space`         | Переключить чекбокс сервиса |
+| `F1`            | Окно с горячими клавишами    |
 
-## Что делает kill switch
+---
 
-Чекбокс «Exclusive / Kill switch» добавляет `reject` к командам `ip route` и `dns-proxy route`. Семантика: пока VPN up — трафик идёт через туннель; если VPN упал — пакеты **дропаются**, а не утекают через ISP.
+## Как это работает под капотом
 
-## Формат каталога (services.json)
+Приложение общается с роутером по **RCI (HTTP/JSON)** — встроенному в
+NDMS 5.x REST API, к которому авторизуется через challenge-response
+`SHA-256(challenge + MD5(user:realm:pass))`. Пароль никогда не летит
+в открытом виде. Telnet остаётся как fallback, если веб-сервер
+роутера недоступен (например, отключён компонент `http-proxy`).
+
+Большие списки доменов автоматически разбиваются на группы размером
+≤300 записей (`name`, `name_2`, `name_3`), потому что на
+`object-group fqdn` у NDMS рекомендованный soft-limit именно в эту
+цифру; выше начинаются лавины `Dns::Route::ResolveQueue` в логе
+роутера и рост CPU на периодическом ре-резолве.
+
+Wildcards (`*.example.com`) нормализуются в `example.com` — NDMS
+делает суффикс-матчинг автоматически, литеральная звёздочка
+отвергается парсером CLI.
+
+Каталог `data/services.json` — это
+[простой JSON](#формат-каталога-servicesjson), который можно
+импортировать с любого URL или диска. Upstream-источники (v2fly,
+Cloudflare, GitHub, Telegram CIDR) фетчатся с защитой от редиректов
+на `file://` / `ftp://` и жёстким cap'ом 20 МБ на ответ, с
+прозрачным fallback на `cdn.jsdelivr.net` (что полезно, когда
+`raw.githubusercontent.com` заблокирован).
+
+<p align="center">
+  <img src="docs/screenshots/05-catalog.png" alt="Каталог" width="720">
+</p>
+
+---
+
+## Формат каталога `services.json`
 
 ```json
 {
   "schema_version": 1,
-  "catalog_version": "1.0.0",
+  "catalog_version": "2.0.0",
   "catalog_name": "My catalog",
   "services": [
     {
       "id": "service_id",
-      "name": "Human Name",
-      "category": "AI | Video | Messaging | Social | Music | Dev | Productivity | Content",
-      "description": "Short description",
+      "name": "Читаемое имя",
+      "category": "AI | Video | Messaging | Social | Music | Dev | Productivity | Content | Gaming | Payment",
+      "description": "Короткое описание",
       "fqdn": ["example.com", "api.example.com"],
-      "ipv4_cidr": ["1.2.3.0/24"]
+      "ipv4_cidr": ["1.2.3.0/24"],
+      "upstream": [
+        {"type": "v2fly", "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/example"}
+      ]
     }
   ]
 }
 ```
 
-- `id` → имя `object-group fqdn` на роутере (`[A-Za-z][A-Za-z0-9_]{0,31}`).
-- `fqdn` — один домен на строку, поддомены подхватываются автоматически роутером.
-- `ipv4_cidr` — CIDR формат, приложение конвертирует в `network mask`.
+- `id` → имя `object-group fqdn` на роутере. Регекс: `[A-Za-z][A-Za-z0-9_]{0,31}`.
+- `fqdn` — один домен на строку, **ASCII или Punycode (`xn--…`)**.
+  IDN-имена автоматически переводятся в Punycode.
+- `ipv4_cidr` — CIDR-форма, приложение сама переводит в `network mask`.
+- `upstream` — откуда подтягивать свежие списки при клике «⟳ Обновить».
+
+---
 
 ## Сборка из исходников
 
-Требуется Python 3.10+ на Windows. Tkinter встроен.
+Требуется Python 3.10+ на Windows. Tkinter входит в стандартный
+установщик CPython.
 
 ```batch
 python -m pip install -r requirements-dev.txt
@@ -67,20 +219,43 @@ build.bat
 
 ## Тесты
 
-Non-UI слои покрыты pytest (тесты в `tests/`, запуск без Tkinter и без живого роутера):
+Не-UI-слой полностью покрыт pytest (191 тест, запускаются без Tk и
+без живого роутера):
 
 ```bash
 python -m pytest tests/
 ```
 
-CI-workflow `.github/workflows/test.yml` прогоняет тесты на каждом push/PR на Python 3.10–3.13.
-CI-workflow `.github/workflows/release.yml` автоматически собирает `.exe` и прикладывает к GitHub Release при push тега `v*`.
+CI-workflow `.github/workflows/test.yml` прогоняет тесты на каждом
+push/PR на Python 3.10–3.13. Workflow `.github/workflows/release.yml`
+автоматически собирает `.exe` и прикладывает к GitHub Release при
+push тега `v*`, текст release notes берётся из аннотации тега.
 
-Если `pip install` валится по таймауту на pypi.org — прошивайте `python_pypi` через VPN (уже в каталоге).
+---
 
 ## Известные ограничения
 
-- **Основной транспорт — Telnet** (порт 23). Пароль летит по LAN в открытом виде. Альтернативный RCI HTTP-клиент с challenge-response реализован в `kn_gui/rci_client.py` — он не требует plaintext пароля и не зависит от Telnet-компонента, но пока используется только для чтения снапшотов; запись (apply, create, delete) всё ещё идёт через Telnet. Если ваш роутер в недоверенной сети — выключите Telnet-компонент и ждите полной миграции.
-- **FQDN-маршрутизация требует, чтобы клиенты использовали роутер как DNS.** Android Private DNS / iOS Encrypted DNS / браузерный DoH ломают механизм — роутер не видит резолв. Для форсирования — скрипт `kn_block_doh.py` в корне репозитория (блокирует популярные DoH/DoT endpoint'ы).
-- **IPv4 only.** FQDN-группы и `ip route` не транслируют AAAA-записи и не маршрутизируют IPv6 через VPN. Утилита `kn_block_ipv6.py` отключает IPv6 на LAN, чтобы закрыть leak.
-- **Таймаут логина — 8 секунд.** При неверном пароле падает быстро (v0.2.0+).
+- **FQDN-маршрутизация работает, только если клиенты используют
+  роутер как DNS.** Android Private DNS / iOS Encrypted DNS / браузерный
+  DoH ломают механизм — роутер не видит резолв. Частично решается
+  через сопутствующий скрипт `kn_block_doh.py` в корне репозитория.
+- **IPv4 only.** FQDN-группы и `ip route` не транслируют AAAA-записи,
+  IPv6-трафик может утекать мимо VPN. Для закрытия leak-а — утилита
+  `kn_block_ipv6.py`.
+- **`show log` через RCI не работает** (возвращает 404 в NDMS). Эта
+  команда осталась доступной только по Telnet. Для долгосрочного
+  мониторинга используйте syslog-listener из соседнего проекта.
+- **Таймаут логина — 8 секунд.** При неверном пароле падает быстро.
+
+---
+
+## Вклад
+
+PR-ы приветствуются. Перед отправкой — прогоните `python -m pytest
+tests/` и убедитесь, что покрытие не уменьшилось. Если меняете
+`services.json` — проверьте, что все новые FQDN и ID проходят
+`tests/test_fqdn_validation.py`.
+
+## Лицензия
+
+MIT. См. [LICENSE](LICENSE).

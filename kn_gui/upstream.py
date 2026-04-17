@@ -9,30 +9,52 @@ from .constants import TTL_ASN, TTL_IP_PROVIDER, TTL_V2FLY
 from .net import _http_get, cached
 
 
-def fetch_v2fly(url: str, force: bool = False) -> list[str]:
+# jsDelivr mirror for v2fly — auto-tried when raw.githubusercontent.com
+# is blocked (common in RU). Same content, different CDN.
+_V2FLY_RAW = 'https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/'
+_V2FLY_CDN = 'https://cdn.jsdelivr.net/gh/v2fly/domain-list-community@master/data/'
+
+
+def _v2fly_parse(text: str) -> list[str]:
     """Parse v2fly domain-list-community format. Accepts `domain:X` and
     `full:X`; drops keyword: / regexp: / include: and blank/comment lines."""
+    out: set[str] = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if '#' in line:
+            line = line.split('#', 1)[0].strip()
+        if not line:
+            continue
+        if ':' in line:
+            prefix, rest = line.split(':', 1)
+            prefix = prefix.lower().strip()
+            rest = rest.strip().split()[0] if rest.strip() else ''
+            if prefix in ('domain', 'full') and rest:
+                out.add(rest.lower())
+        else:
+            if ' ' not in line:
+                out.add(line.lower())
+    return sorted(out)
+
+
+def fetch_v2fly(url: str, force: bool = False) -> list[str]:
+    """Fetch and parse a v2fly domain-list. Automatically tries the jsDelivr
+    CDN mirror when the primary (raw.githubusercontent.com) fails — which
+    happens regularly in Russia."""
     def produce():
-        text = _http_get(url)
-        out: set[str] = set()
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            if '#' in line:
-                line = line.split('#', 1)[0].strip()
-            if not line:
-                continue
-            if ':' in line:
-                prefix, rest = line.split(':', 1)
-                prefix = prefix.lower().strip()
-                rest = rest.strip().split()[0] if rest.strip() else ''
-                if prefix in ('domain', 'full') and rest:
-                    out.add(rest.lower())
-            else:
-                if ' ' not in line:
-                    out.add(line.lower())
-        return sorted(out)
+        # Try primary URL first.
+        try:
+            return _v2fly_parse(_http_get(url))
+        except Exception:
+            pass
+        # Fallback: swap GitHub raw → jsDelivr CDN.
+        if _V2FLY_RAW in url:
+            cdn_url = url.replace(_V2FLY_RAW, _V2FLY_CDN)
+            return _v2fly_parse(_http_get(cdn_url))
+        raise  # re-raise the original error if no fallback applies
+
     return cached(f'v2fly:{url}', TTL_V2FLY, produce, force)
 
 

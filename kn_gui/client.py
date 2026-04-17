@@ -14,7 +14,8 @@ import time
 from typing import Optional
 
 from .constants import DEFAULT_TELNET_PORT
-from .utils import is_error_output, strip_ansi
+from .utils import (MAX_ENTRIES_PER_GROUP, is_error_output, strip_ansi,
+                    validate_fqdns, validate_group_name)
 
 
 class KeeneticClient:
@@ -249,24 +250,76 @@ class KeeneticClient:
     # ── FQDN object-group + dns-proxy route ───────────────────────────────
     def create_fqdn_group(self, name: str, entries: list[str],
                           description: str = '') -> list[str]:
+        """Create (or update) an object-group fqdn and `include` each entry.
+
+        Validation:
+        - Group name is checked against Keenetic's 32-char regex.
+        - Entries are normalized (wildcards stripped) and validated.
+        - Invalid FQDNs are skipped (returned in errs).
+        - If entries exceed MAX_ENTRIES_PER_GROUP (~300), the list is split
+          into chunks and additional groups `<name>_2`, `<name>_3` are
+          created automatically.
+
+        Returns a list of warnings/errors (empty = all good).
+        """
         errs: list[str] = []
-        try:
-            self.run_expect(f'object-group fqdn {name}')
-            if description:
-                safe = description.replace('"', '').strip()
-                if safe:
+
+        # ── Validate group name ────────────────────────────────────────
+        name_err = validate_group_name(name)
+        if name_err:
+            errs.append(f'group name: {name_err}')
+            return errs
+
+        # ── Validate + normalize entries ───────────────────────────────
+        valid, warnings, invalid = validate_fqdns(entries)
+        errs.extend(warnings)
+        errs.extend(invalid)
+
+        if not valid:
+            errs.append('no valid entries to include')
+            return errs
+
+        # ── Split into chunks ≤MAX_ENTRIES_PER_GROUP ───────────────────
+        chunks: list[tuple[str, list[str]]] = []
+        if len(valid) <= MAX_ENTRIES_PER_GROUP:
+            chunks.append((name, valid))
+        else:
+            # name, name_2, name_3, ...
+            for i in range(0, len(valid), MAX_ENTRIES_PER_GROUP):
+                chunk = valid[i:i + MAX_ENTRIES_PER_GROUP]
+                suffix = '' if i == 0 else f'_{i // MAX_ENTRIES_PER_GROUP + 1}'
+                chunk_name = f'{name}{suffix}'
+                # Validate derived name too (might exceed 32 chars)
+                if validate_group_name(chunk_name):
+                    # Name too long after suffix — truncate base
+                    max_base = 32 - len(suffix)
+                    chunk_name = f'{name[:max_base]}{suffix}'
+                chunks.append((chunk_name, chunk))
+            if len(chunks) > 1:
+                errs.append(
+                    f'split {len(valid)} entries into {len(chunks)} groups '
+                    f'(Keenetic limit ~{MAX_ENTRIES_PER_GROUP}/group): '
+                    + ', '.join(f'{n}({len(e)})' for n, e in chunks))
+
+        # ── Push each chunk to the router ──────────────────────────────
+        for chunk_name, chunk_entries in chunks:
+            try:
+                self.run_expect(f'object-group fqdn {chunk_name}')
+                if description:
+                    safe = description.replace('"', '').strip()
+                    if safe:
+                        try:
+                            self.run_expect(f'description "{safe}"')
+                        except RuntimeError as e:
+                            errs.append(f'{chunk_name} description: {e}')
+                for entry in chunk_entries:
                     try:
-                        self.run_expect(f'description "{safe}"')
+                        self.run_expect(f'include {entry}')
                     except RuntimeError as e:
-                        errs.append(f'description: {e}')
-            for entry in entries:
-                try:
-                    self.run_expect(f'include {entry}')
-                except RuntimeError as e:
-                    errs.append(f'include {entry}: {e}')
-        finally:
-            # Always leave the object-group context even on error.
-            self.run('exit')
+                        errs.append(f'include {entry}: {e}')
+            finally:
+                # Always leave the object-group context even on error.
+                self.run('exit')
         return errs
 
     def bind_fqdn_route(self, group: str, interface: str, auto: bool = True,

@@ -26,6 +26,92 @@ def cidr_to_mask(cidr: str) -> tuple[str, str]:
     return net, mask
 
 
+# ── FQDN / group-name validation (Keenetic-specific) ────────────────────────
+
+_FQDN_LABEL_RE = re.compile(r'^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$')
+
+# Keenetic auto-applies suffix-match: `example.com` covers `*.example.com`.
+# Explicit `*.` prefixes are rejected by the CLI.
+_WILDCARD_PREFIX = re.compile(r'^\*\.?')
+
+MAX_ENTRIES_PER_GROUP = 300
+"""Soft limit for `include` entries in one `object-group fqdn`. Beyond this,
+Keenetic's dns-proxy starts to degrade (slow resolve, CPU spikes). Value is
+the de-facto standard used by yangirov/keenetic-geosite-sync."""
+
+
+def is_valid_fqdn(fqdn: str) -> bool:
+    """Strict check: RFC 1035 labels, ASCII only, ≥2 labels, no wildcards."""
+    if not isinstance(fqdn, str):
+        return False
+    name = fqdn.strip().rstrip('.')
+    if not name or len(name) > 253:
+        return False
+    labels = name.split('.')
+    if len(labels) < 2:
+        return False
+    return all(_FQDN_LABEL_RE.match(lab) for lab in labels)
+
+
+def normalize_fqdn(fqdn: str) -> tuple[str, str]:
+    """Return (normalized, warning_or_empty).
+
+    - `*.example.com` → `example.com` + warning about auto-suffix-match.
+    - Trailing dot stripped.
+    - IDN stays as-is (caller must Punycode before).
+    - Invalid FQDNs returned unchanged with a warning.
+    """
+    name = fqdn.strip().rstrip('.')
+    warn = ''
+    m = _WILDCARD_PREFIX.match(name)
+    if m:
+        name = name[m.end():]
+        warn = (f'wildcard {fqdn!r} → {name!r} '
+                '(Keenetic auto-matches all subdomains)')
+    if not is_valid_fqdn(name):
+        return fqdn.strip(), f'invalid FQDN: {fqdn!r}'
+    return name, warn
+
+
+def validate_fqdns(fqdns: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """Split into (valid, warnings, invalid).
+
+    `valid` = ready to `include`.
+    `warnings` = normalized FQDNs with notes (wildcards stripped etc.).
+    `invalid` = skipped entirely.
+    """
+    valid: list[str] = []
+    warnings: list[str] = []
+    invalid: list[str] = []
+    seen: set[str] = set()
+    for raw in fqdns:
+        norm, warn = normalize_fqdn(raw)
+        if warn and 'invalid' in warn:
+            invalid.append(warn)
+            continue
+        if norm.lower() in seen:
+            continue  # dedup silently
+        seen.add(norm.lower())
+        valid.append(norm)
+        if warn:
+            warnings.append(warn)
+    return valid, warnings, invalid
+
+
+def validate_group_name(name: str) -> str | None:
+    """Return an error message if `name` is not a valid Keenetic object-group
+    name, or None if OK. Keenetic requires ^[A-Za-z][A-Za-z0-9_]{0,31}$."""
+    from .constants import GROUP_NAME_RE
+    if not name:
+        return 'group name is empty'
+    if len(name) > 32:
+        return f'group name too long ({len(name)} > 32 chars)'
+    if not GROUP_NAME_RE.match(name):
+        return (f'group name {name!r} contains invalid characters; '
+                'allowed: letters, digits, underscores; must start with a letter')
+    return None
+
+
 def is_error_output(text: str) -> bool:
     """Heuristic: Keenetic CLI error lines contain 'error' or 'invalid'.
     Single helper so we don't sprinkle substring checks all over."""

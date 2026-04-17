@@ -367,3 +367,174 @@ def test_update_info_repr_error():
     info = UpdateInfo(available=False, current='3.0.6', latest='?',
                        error='timeout')
     assert 'timeout' in repr(info)
+
+
+# ── apply_update ───────────────────────────────────────────────────────────
+#
+# The real apply_update:
+#  - does nothing unless IS_FROZEN
+#  - spawns a detached PowerShell process with DEVNULL stdio
+#  - calls sys.exit(0) at the end
+#
+# Tests below monkeypatch IS_FROZEN + subprocess.Popen + sys.exit so we can
+# verify the right arguments without actually restarting the test process.
+
+
+def _patched_apply(monkeypatch, *, is_frozen=True,
+                    new_exe_exists=True, popen_raises=None):
+    """Build a monkeypatched environment and return (popen_spy, exit_spy)."""
+    monkeypatch.setattr(updater, 'IS_FROZEN', is_frozen)
+    monkeypatch.setattr(updater.os.path, 'exists',
+                         lambda p: new_exe_exists)
+
+    popen_calls: list = []
+
+    class _FakePopen:
+        def __init__(self, argv, **kwargs):
+            popen_calls.append({'argv': argv, 'kwargs': kwargs})
+            if popen_raises is not None:
+                raise popen_raises
+
+    exit_calls: list = []
+    # Patch via the already-imported subprocess module inside updater.
+    import subprocess as _sp
+    monkeypatch.setattr(_sp, 'Popen', _FakePopen)
+    monkeypatch.setattr(updater.sys, 'exit',
+                         lambda code=0: exit_calls.append(code))
+    # Fast-forward the 0.25 s detach pause so the suite stays snappy.
+    import time as _time
+    monkeypatch.setattr(_time, 'sleep', lambda *_: None)
+    return popen_calls, exit_calls
+
+
+def test_apply_update_noop_when_not_frozen(monkeypatch, tmp_path):
+    popen_calls, exit_calls = _patched_apply(monkeypatch, is_frozen=False)
+    updater.apply_update(str(tmp_path / 'new.exe'))
+    assert popen_calls == []
+    assert exit_calls == []
+
+
+def test_apply_update_refuses_empty_path(monkeypatch):
+    popen_calls, exit_calls = _patched_apply(monkeypatch, is_frozen=True)
+    updater.apply_update('')
+    assert popen_calls == []
+    assert exit_calls == []
+
+
+def test_apply_update_refuses_missing_new_exe(monkeypatch, tmp_path):
+    popen_calls, exit_calls = _patched_apply(
+        monkeypatch, is_frozen=True, new_exe_exists=False)
+    updater.apply_update(str(tmp_path / 'gone.exe'))
+    assert popen_calls == []
+    assert exit_calls == []
+
+
+def test_apply_update_spawns_detached_powershell(monkeypatch, tmp_path):
+    """Verify the critical flags: DEVNULL stdio + DETACHED_PROCESS."""
+    import subprocess as _sp
+    popen_calls, exit_calls = _patched_apply(monkeypatch, is_frozen=True)
+    # Stub mkstemp so we don't litter /tmp with real files.
+    fake_fd = 99
+    fake_ps = str(tmp_path / 'fake.ps1')
+    monkeypatch.setattr(updater.tempfile, 'mkstemp',
+                         lambda prefix='', suffix='', dir=None: (fake_fd, fake_ps))
+    # fdopen → actual temp file so the write succeeds.
+    real = open(fake_ps, 'w', encoding='utf-8-sig')
+    monkeypatch.setattr(updater.os, 'fdopen',
+                         lambda fd, mode='r', **kw: real)
+
+    updater.apply_update('C:\\some\\new.exe')
+
+    assert len(popen_calls) == 1, 'expected exactly one subprocess.Popen'
+    call = popen_calls[0]
+    argv = call['argv']
+    kwargs = call['kwargs']
+
+    # PowerShell invocation
+    assert argv[0] == 'powershell.exe'
+    assert '-ExecutionPolicy' in argv and 'Bypass' in argv
+    assert '-NoProfile' in argv
+    assert '-WindowStyle' in argv and 'Hidden' in argv
+    assert '-File' in argv and fake_ps in argv
+
+    # CRITICAL: stdio must be DEVNULL — this was the v3.2.0 bug. In
+    # PyInstaller --windowed, inheriting the parent's (None) stdio
+    # handles causes PowerShell to fail to start.
+    assert kwargs['stdin']  == _sp.DEVNULL
+    assert kwargs['stdout'] == _sp.DEVNULL
+    assert kwargs['stderr'] == _sp.DEVNULL
+    assert kwargs['close_fds'] is True
+
+    flags = kwargs['creationflags']
+    assert flags & _sp.DETACHED_PROCESS
+    assert flags & _sp.CREATE_NO_WINDOW
+    assert flags & _sp.CREATE_NEW_PROCESS_GROUP
+
+    # sys.exit must be called at the end.
+    assert exit_calls == [0]
+
+
+def test_apply_update_falls_back_to_explorer_when_powershell_missing(
+        monkeypatch, tmp_path):
+    """If powershell.exe is blocked (AppLocker) we should at least open
+    Explorer on the downloaded exe so the user can replace it manually."""
+    popen_calls, exit_calls = _patched_apply(
+        monkeypatch, is_frozen=True,
+        popen_raises=FileNotFoundError('powershell blocked'))
+
+    # Stub mkstemp so the PS1 write path succeeds before the Popen failure.
+    fake_ps = str(tmp_path / 'fake.ps1')
+    fd = os.open(fake_ps, os.O_WRONLY | os.O_CREAT, 0o600)
+    monkeypatch.setattr(updater.tempfile, 'mkstemp',
+                         lambda prefix='', suffix='', dir=None: (fd, fake_ps))
+
+    # Second Popen call (explorer fallback) must succeed.
+    real_popen = popen_calls.append
+    explorer_calls: list = []
+
+    class _Popen2:
+        def __init__(self, argv, **kw):
+            # First call: simulated PowerShell failure.
+            # Second call: explorer.exe /select, new.exe — must record.
+            if argv and argv[0] == 'explorer.exe':
+                explorer_calls.append(argv)
+            else:
+                raise FileNotFoundError('powershell blocked')
+
+    import subprocess as _sp
+    monkeypatch.setattr(_sp, 'Popen', _Popen2)
+
+    updater.apply_update('C:\\some\\new.exe')
+
+    # We should NOT have exited (nothing was restarted).
+    assert exit_calls == []
+    # We should have opened Explorer on the new exe.
+    assert len(explorer_calls) == 1
+    assert explorer_calls[0][0] == 'explorer.exe'
+    assert 'C:\\some\\new.exe' in explorer_calls[0]
+
+
+def test_apply_update_ps_script_escapes_apostrophes_in_path(monkeypatch,
+                                                              tmp_path):
+    """If the exe path contains single quotes (unusual but legal on NTFS),
+    the generated PS1 must double them — otherwise the single-quoted
+    string literal breaks and the script is malformed."""
+    popen_calls, _ = _patched_apply(monkeypatch, is_frozen=True)
+    fake_ps = str(tmp_path / 'fake.ps1')
+    fd = os.open(fake_ps, os.O_WRONLY | os.O_CREAT, 0o600)
+    monkeypatch.setattr(updater.tempfile, 'mkstemp',
+                         lambda prefix='', suffix='', dir=None: (fd, fake_ps))
+
+    evil_path = "C:\\Users\\O'Brien\\new.exe"
+    monkeypatch.setattr(updater.sys, 'executable', "C:\\O'Connor.exe")
+    updater.apply_update(evil_path)
+
+    # Read the script back from disk and check escaping.
+    ps_text = open(fake_ps, 'r', encoding='utf-8-sig').read()
+    # Single quotes must be doubled inside single-quoted PS strings.
+    assert "'C:\\Users\\O''Brien\\new.exe'" in ps_text
+    assert "'C:\\O''Connor.exe'" in ps_text
+
+
+# import os at the tail so test helpers above can use it
+import os  # noqa: E402

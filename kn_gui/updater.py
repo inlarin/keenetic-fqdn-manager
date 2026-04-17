@@ -376,43 +376,73 @@ def apply_update(new_exe_path: str) -> None:
     def _ps(path: str) -> str:
         return "'" + path.replace("'", "''") + "'"
 
+    # Verbose PS1 that writes each step to %TEMP%\kfm_update.log so the
+    # user can diagnose failed restarts. Previously, if the restart
+    # silently failed (AV lock, policy, race), the user just saw the app
+    # close with no new window — no logs, no clue.
+    log_path = os.path.join(tempfile.gettempdir(), 'kfm_update.log')
+
     ps_script = f"""\
-$ErrorActionPreference = 'Stop'
-Start-Sleep -Seconds {_PS_INITIAL_WAIT}
+$ErrorActionPreference = 'Continue'
+$log = {_ps(log_path)}
 $cur = {_ps(current_exe)}
 $new = {_ps(new_exe_path)}
 $bak = $cur + '.bak'
 $bakName = [System.IO.Path]::GetFileName($bak)
 $ok = $false
 
+function Say($msg) {{
+    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    Add-Content -Path $log -Value "[$ts] $msg" -Encoding UTF8 -ErrorAction SilentlyContinue
+}}
+
+Say "apply_update started"
+Say "cur = $cur"
+Say "new = $new"
+Say "bak = $bak"
+Say "waiting {_PS_INITIAL_WAIT}s for parent to exit..."
+Start-Sleep -Seconds {_PS_INITIAL_WAIT}
+
 for ($i = 0; $i -lt {_PS_APPLY_RETRIES}; $i++) {{
     try {{
-        if (Test-Path $bak) {{ Remove-Item $bak -Force -ErrorAction SilentlyContinue }}
-        Rename-Item -Path $cur -NewName $bakName -Force
-        Copy-Item  -Path $new -Destination $cur  -Force
-        Start-Process $cur
+        if (Test-Path $bak) {{
+            Remove-Item $bak -Force -ErrorAction SilentlyContinue
+        }}
+        Say "attempt $($i+1)/{_PS_APPLY_RETRIES}: rename current -> $bakName"
+        Rename-Item -Path $cur -NewName $bakName -Force -ErrorAction Stop
+        Say "copy $new -> $cur"
+        Copy-Item  -Path $new -Destination $cur  -Force -ErrorAction Stop
+        Say "launching $cur"
+        Start-Process -FilePath $cur -WorkingDirectory (Split-Path $cur)
         Start-Sleep -Seconds 1
         Remove-Item $bak -Force -ErrorAction SilentlyContinue
         Remove-Item $new -Force -ErrorAction SilentlyContinue
         $ok = $true
+        Say "SUCCESS"
         break
     }} catch {{
+        Say "attempt $($i+1) failed: $($_.Exception.Message)"
         Start-Sleep -Seconds {_PS_RETRY_WAIT}
     }}
 }}
 
 if (-not $ok) {{
-    # All retries exhausted — restore the backup so the user is left with
-    # a working (old) install rather than a broken one.
+    Say "all retries exhausted, attempting rollback"
     if (Test-Path $bak) {{
         try {{
-            if (Test-Path $cur) {{ Remove-Item $cur -Force -ErrorAction SilentlyContinue }}
-            Rename-Item -Path $bak -NewName ([System.IO.Path]::GetFileName($cur))
-            Start-Process $cur
-        }} catch {{ }}
+            if (Test-Path $cur) {{
+                Remove-Item $cur -Force -ErrorAction SilentlyContinue
+            }}
+            Rename-Item -Path $bak -NewName ([System.IO.Path]::GetFileName($cur)) -ErrorAction Stop
+            Start-Process -FilePath $cur -WorkingDirectory (Split-Path $cur)
+            Say "rollback OK — launched old version"
+        }} catch {{
+            Say "rollback failed: $($_.Exception.Message)"
+        }}
     }}
-    # Don't delete the downloaded new exe so the user can retry manually.
+    # Keep the downloaded new exe so the user can retry manually.
 }}
+Say "script done (ok=$ok)"
 Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
 """
 
@@ -423,7 +453,6 @@ Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
         with os.fdopen(fd, 'w', encoding='utf-8-sig') as fh:
             fh.write(ps_script)
     except Exception:
-        # If we can't write the script, just bail. Nothing to restart.
         try:
             os.unlink(ps_path)
         except OSError:
@@ -431,27 +460,79 @@ Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
         LOGGER.exception('apply_update: failed to write PS1 script')
         return
 
+    # Drop a Python-side breadcrumb too, so if the PowerShell never starts
+    # at all (e.g. AppLocker, missing PowerShell), the user still has
+    # evidence of what happened.
     try:
+        with open(log_path, 'a', encoding='utf-8') as lf:
+            lf.write(
+                f'[python] apply_update spawning PS1\n'
+                f'    current_exe = {current_exe}\n'
+                f'    new_exe     = {new_exe_path}\n'
+                f'    ps_path     = {ps_path}\n')
+    except OSError:
+        pass
+
+    try:
+        # CRITICAL on PyInstaller --windowed: the parent has no stdin/
+        # stdout/stderr. Without DEVNULL, Popen tries to inherit the
+        # parent's (None) handles, and PowerShell fails to start or
+        # crashes on first Write-Host. This was the primary cause of
+        # "clicked Yes, nothing restarted" reports.
+        #
+        # Also: CREATE_NEW_PROCESS_GROUP lets PowerShell outlive us even
+        # on Windows 7. DETACHED_PROCESS on its own doesn't always break
+        # the console tie when we never had a console to begin with.
+        creationflags = (
+            subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NO_WINDOW
+        )
         subprocess.Popen(
             [
                 'powershell.exe',
                 '-ExecutionPolicy', 'Bypass',
+                '-NoProfile',
                 '-NonInteractive',
                 '-WindowStyle', 'Hidden',
                 '-File', ps_path,
             ],
-            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=creationflags,
         )
     except (OSError, FileNotFoundError) as e:
-        # PowerShell is present on every supported Windows version
-        # (7 SP1+), but corporate AppLocker / domain policy may block
-        # it. Let the caller know instead of silently failing.
+        # PowerShell is present on every supported Windows (7 SP1+), but
+        # corporate AppLocker / SRP may block it. Fall back: show the
+        # user where the new exe lives, open Explorer on it.
         LOGGER.error('apply_update: PowerShell unavailable: %s', e)
+        try:
+            with open(log_path, 'a', encoding='utf-8') as lf:
+                lf.write(f'[python] PowerShell spawn failed: {e!r}\n')
+        except OSError:
+            pass
         try:
             os.unlink(ps_path)
         except OSError:
             pass
+        try:
+            # At least reveal the downloaded exe — the user can replace
+            # the current install manually.
+            subprocess.Popen(
+                ['explorer.exe', '/select,', new_exe_path],
+                close_fds=True,
+            )
+        except OSError:
+            pass
         return
+
+    # Give the subprocess a moment to fully detach before we tear down
+    # our own process. Without this, very fast sys.exit() can orphan the
+    # freshly-started child on some Windows builds.
+    import time as _t
+    _t.sleep(0.25)
     sys.exit(0)
 
 

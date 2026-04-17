@@ -5,11 +5,24 @@ import re
 from enum import Enum
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '3.2.0'
+APP_VERSION = '3.2.1'
 
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
 DEFAULT_TELNET_PORT = 23
+
+# Tag embedded in the `description` of any SSTP/VPN interface we create.
+# It lets us distinguish our managed interfaces from ones the user set up
+# in the router web-UI, so the "Delete managed VPN" button only removes
+# interfaces we own. Keep the marker short and descriptive-free so it
+# doesn't waste the router's 64-char description limit.
+MANAGED_INTERFACE_TAG = '[kn-gui]'
+
+# Priority for `ip global <N>` on managed VPN interfaces. In Keenetic's
+# connection-priority table, lower = higher priority. 700 places the
+# interface above manual routes but below the main ISP link, which is
+# the right default for a VPN client.
+MANAGED_VPN_IP_GLOBAL_PRIORITY = 700
 
 # Valid object-group / interface identifier characters.
 GROUP_NAME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_]{0,31}$')

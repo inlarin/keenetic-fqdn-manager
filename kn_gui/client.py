@@ -365,7 +365,18 @@ class KeeneticClient:
                                auto_connect: bool = True) -> list[str]:
         """Provision a fresh SSTP VPN-client interface. Idempotent: if a
         slot with the same name already exists, its peer/auth/flags get
-        reset so we don't inherit stale params."""
+        reset so we don't inherit stale params.
+
+        The `description` is prefixed with MANAGED_INTERFACE_TAG so the
+        app can later recognise which interfaces it owns (for the "Delete
+        managed VPN" action), and `ip global` is set so the router will
+        actually use this interface for policy routing — without it the
+        interface exists but dns-proxy rules pointing at it silently
+        do nothing.
+        """
+        from .constants import (MANAGED_INTERFACE_TAG,
+                                 MANAGED_VPN_IP_GLOBAL_PRIORITY)
+
         errs: list[str] = []
 
         def try_(cmd: str, critical: bool = False):
@@ -377,6 +388,9 @@ class KeeneticClient:
                 # Non-critical commands (`no ...` resets) can fail when the
                 # field wasn't set in the first place; that's OK.
 
+        tagged = (f'{MANAGED_INTERFACE_TAG} {description}'.strip()
+                  if description else MANAGED_INTERFACE_TAG)
+
         try:
             self.run_expect(f'interface {name}')
             # Reset any prior state so re-creation doesn't inherit stale values
@@ -384,10 +398,9 @@ class KeeneticClient:
             try_('no authentication identity')
             try_('no authentication password')
             try_('no description')
-            if description:
-                safe = _sanitize_cli_value(description).replace('"', '').strip()
-                if safe:
-                    try_(f'description "{safe}"', critical=True)
+            safe_desc = _sanitize_cli_value(tagged).replace('"', '').strip()
+            if safe_desc:
+                try_(f'description "{safe_desc}"', critical=True)
             try_(f'peer {_sanitize_cli_value(peer)}',                           critical=True)
             try_(f'authentication identity {_sanitize_cli_value(user)}',        critical=True)
             try_(f'authentication password {_sanitize_cli_value(password)}',    critical=True)
@@ -398,6 +411,7 @@ class KeeneticClient:
             try_('ipcp default-route')
             try_('ipcp dns-routes')
             try_('ipcp address')
+            try_(f'ip global {MANAGED_VPN_IP_GLOBAL_PRIORITY}')
             if auto_connect:
                 try_('connect')
                 try_('up')
@@ -407,3 +421,29 @@ class KeeneticClient:
 
     def delete_interface(self, name: str) -> None:
         self.run(f'no interface {name}')
+
+    def list_managed_interfaces(self) -> list[dict]:
+        """Return interfaces whose description carries MANAGED_INTERFACE_TAG.
+
+        The Telnet `list_interfaces()` above only captures a few fields;
+        the description isn't one of them. We re-fetch via `show interface`
+        and pull descriptions out in a tolerant loop — same parsing
+        logic, just keeping the description field.
+        """
+        from .constants import MANAGED_INTERFACE_TAG
+        out: list[dict] = []
+        text, _ = self.run('show interface', timeout=15.0)
+        current: dict = {}
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith('interface-name:'):
+                if current.get('name') and MANAGED_INTERFACE_TAG in current.get('description', ''):
+                    out.append(current)
+                current = {'name': s.split(':', 1)[1].strip()}
+            elif s.startswith('description:'):
+                current['description'] = s.split(':', 1)[1].strip()
+            elif s.startswith('type:'):
+                current['type'] = s.split(':', 1)[1].strip()
+        if current.get('name') and MANAGED_INTERFACE_TAG in current.get('description', ''):
+            out.append(current)
+        return out

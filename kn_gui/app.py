@@ -1051,8 +1051,15 @@ class App(tk.Tk):
         if not s:
             messagebox.showinfo(APP_NAME, 'Выберите сервер в таблице.')
             return
+        # IMPORTANT: pass the raw IP, not HostName. The router resolves
+        # `peer` at connect-time against its own DNS — in typical setups
+        # that's the ISP DNS, which may not resolve vpngate.net subdomains
+        # (or may be redirected by a DPI middlebox). With a numeric IP we
+        # bypass resolution entirely.  vpngate.net's CSV provides both
+        # fields; if IP is somehow missing, fall back to HostName.
+        peer = (s.get('IP') or '').strip() or s.get('HostName', '')
         self._create_sstp_from_server(
-            peer=s.get('HostName', ''),
+            peer=peer,
             country=s.get('CountryLong', '?'),
             label=f'{s.get("CountryShort", "?")} {s.get("HostName", "")}')
 

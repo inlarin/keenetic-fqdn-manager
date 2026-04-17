@@ -323,6 +323,9 @@ class KeeneticRCIClient:
     def create_sstp_interface(self, name: str, peer: str, user: str,
                                password: str, description: str = '',
                                auto_connect: bool = True) -> list[str]:
+        from .constants import (MANAGED_INTERFACE_TAG,
+                                 MANAGED_VPN_IP_GLOBAL_PRIORITY)
+
         errs: list[str] = []
 
         def try_(cmd: str, critical: bool = False):
@@ -332,16 +335,22 @@ class KeeneticRCIClient:
                 if critical:
                     errs.append(str(e))
 
+        # Prefix every managed interface description with a short tag so
+        # we can tell apart interfaces we created from user-made ones.
+        if description:
+            tagged = f'{MANAGED_INTERFACE_TAG} {description}'.strip()
+        else:
+            tagged = MANAGED_INTERFACE_TAG
+
         try:
             self.run_expect(f'interface {name}')
             try_('no peer')
             try_('no authentication identity')
             try_('no authentication password')
             try_('no description')
-            if description:
-                safe = _sanitize_cli_value(description).replace('"', '').strip()
-                if safe:
-                    try_(f'description "{safe}"', critical=True)
+            safe_desc = _sanitize_cli_value(tagged).replace('"', '').strip()
+            if safe_desc:
+                try_(f'description "{safe_desc}"', critical=True)
             try_(f'peer {_sanitize_cli_value(peer)}', critical=True)
             try_(f'authentication identity {_sanitize_cli_value(user)}', critical=True)
             try_(f'authentication password {_sanitize_cli_value(password)}', critical=True)
@@ -352,6 +361,12 @@ class KeeneticRCIClient:
             try_('ipcp default-route')
             try_('ipcp dns-routes')
             try_('ipcp address')
+            # `ip global <N>` — Keenetic web-UI calls this checkbox
+            # "Использовать для выхода в интернет". Without it the
+            # interface exists but is not eligible for policy routing,
+            # so dns-proxy rules pointing at this interface silently do
+            # nothing. That was the "ничего не работает" symptom.
+            try_(f'ip global {MANAGED_VPN_IP_GLOBAL_PRIORITY}')
             if auto_connect:
                 try_('connect')
                 try_('up')
@@ -361,3 +376,17 @@ class KeeneticRCIClient:
 
     def delete_interface(self, name: str) -> None:
         self.run(f'no interface {name}')
+
+    def list_managed_interfaces(self) -> list[dict]:
+        """Return interfaces whose description starts with our tag.
+
+        Used by the UI to let the user remove VPN interfaces this app
+        created without touching ones they configured themselves.
+        """
+        from .constants import MANAGED_INTERFACE_TAG
+        out: list[dict] = []
+        for iface in self.list_interfaces():
+            desc = (iface.get('description') or '')
+            if MANAGED_INTERFACE_TAG in desc:
+                out.append(iface)
+        return out

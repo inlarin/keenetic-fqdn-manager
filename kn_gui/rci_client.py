@@ -38,6 +38,20 @@ from typing import Any, Optional
 from .constants import APP_NAME, APP_VERSION, MAX_HTTP_BYTES
 
 
+def _join_message(msg) -> str:
+    """Normalise a 'message' field that may be a string or list of strings.
+
+    Keenetic NDMS (at least on Netcraze OEM builds) returns the running-config
+    as ``{"message": ["line1", "line2", ...]}`` — a list, not a single string.
+    This helper converts both variants to a single newline-joined string.
+    """
+    if isinstance(msg, str):
+        return msg
+    if isinstance(msg, list):
+        return '\n'.join(str(s) for s in msg if s is not None)
+    return ''
+
+
 def _config_from_json(data: dict) -> str:
     """Convert the JSON tree returned by GET /rci/show/running-config into
     the minimal CLI-text stanzas that ``parse_running_config()`` understands.
@@ -107,27 +121,45 @@ def _config_from_json(data: dict) -> str:
 
 
 def _extract_parse_text(resp) -> str:
-    """Pull CLI text out of a `/rci/parse` response.
+    """Pull CLI text out of a ``/rci/parse`` response.
 
-    The shape is `{"parse": "<echoed command>", "prompt": "(config)>",
-    "status": [{"message": "line 1", "code": 0}, ...]}`. We concatenate
-    all non-empty 'message' / 'text' fields to reconstruct the CLI output
-    the router would have produced over Telnet.
+    Handles two known response shapes:
+
+    **NDMS 5.x (standard)**::
+
+        {"parse": "show running-config", "prompt": "(config)>",
+         "status": [{"message": "line 1", "code": 0}, ...]}
+
+    **Netcraze / some OEM builds**::
+
+        {"message": ["line 1", "line 2", ...], "prompt": "(config)"}
+
+    Returns a single newline-joined string, or '' if nothing useful found.
     """
     if not isinstance(resp, dict):
         return ''
+
+    # Shape A: top-level 'message' is a string or list of lines.
+    top_msg = _join_message(resp.get('message'))
+    if top_msg:
+        return top_msg
+
+    # Shape B: standard status[*].message list.
     chunks: list[str] = []
     for item in resp.get('status', []) or []:
         if isinstance(item, dict):
             msg = item.get('message') or item.get('text') or ''
             if msg:
                 chunks.append(str(msg))
-    # Keep the raw `parse` echo too — some firmware versions put the
-    # output there instead of in status[].
+    if chunks:
+        return '\n'.join(chunks)
+
+    # Shape C: some firmware versions echo the command in 'parse'.
     parse_echo = resp.get('parse')
-    if isinstance(parse_echo, str) and parse_echo.strip() and not chunks:
-        chunks.append(parse_echo)
-    return '\n'.join(chunks)
+    if isinstance(parse_echo, str) and parse_echo.strip():
+        return parse_echo
+
+    return ''
 
 
 def _looks_like_cli_text(text: str) -> bool:
@@ -439,10 +471,12 @@ class RCIClient:
                 if _first_json is None:
                     _first_json = data
                 msg = data.get('message')
-                if isinstance(msg, str) and _looks_like_cli_text(msg):
-                    _log.debug('show_running_config GET %s → .message CLI text (%d chars)',
-                               path, len(msg))
-                    return msg
+                # message can be a plain string OR a list of CLI lines.
+                text = _join_message(msg)
+                if text and _looks_like_cli_text(text):
+                    _log.debug('show_running_config GET %s → .message text (%d chars)',
+                               path, len(text))
+                    return text
             else:
                 _log.debug('show_running_config GET %s → unexpected type %s',
                            path, type(data).__name__)

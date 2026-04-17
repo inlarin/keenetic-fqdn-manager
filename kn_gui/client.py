@@ -260,7 +260,7 @@ class KeeneticClient:
 
     # ── FQDN object-group + dns-proxy route ───────────────────────────────
     def create_fqdn_group(self, name: str, entries: list[str],
-                          description: str = '') -> list[str]:
+                          description: str = '') -> tuple[list[str], list[str]]:
         """Create (or update) an object-group fqdn and `include` each entry.
 
         Validation:
@@ -271,15 +271,19 @@ class KeeneticClient:
           into chunks and additional groups `<name>_2`, `<name>_3` are
           created automatically.
 
-        Returns a list of warnings/errors (empty = all good).
+        Returns (created_group_names, warnings_and_errors).
+        `created_group_names` is the list of all group names that were
+        actually created on the router — the caller MUST bind each one
+        via `bind_fqdn_route` so that split-parts don't leak traffic.
         """
         errs: list[str] = []
+        created: list[str] = []
 
         # ── Validate group name ────────────────────────────────────────
         name_err = validate_group_name(name)
         if name_err:
             errs.append(f'group name: {name_err}')
-            return errs
+            return created, errs
 
         # ── Validate + normalize entries ───────────────────────────────
         valid, warnings, invalid = validate_fqdns(entries)
@@ -288,7 +292,7 @@ class KeeneticClient:
 
         if not valid:
             errs.append('no valid entries to include')
-            return errs
+            return created, errs
 
         # ── Split into chunks ≤MAX_ENTRIES_PER_GROUP ───────────────────
         chunks: list[tuple[str, list[str]]] = []
@@ -328,10 +332,11 @@ class KeeneticClient:
                         self.run_expect(f'include {entry}')
                     except RuntimeError as e:
                         errs.append(f'include {entry}: {e}')
+                created.append(chunk_name)
             finally:
                 # Always leave the object-group context even on error.
                 self.run('exit')
-        return errs
+        return created, errs
 
     def bind_fqdn_route(self, group: str, interface: str, auto: bool = True,
                         reject: bool = False) -> str:
@@ -341,10 +346,22 @@ class KeeneticClient:
         return self.run_expect(' '.join(parts))
 
     def delete_fqdn_group(self, name: str) -> None:
-        # Removal of the route by the app is best-effort: deleting the group
-        # itself will clean up the route regardless.
+        """Delete the FQDN group and its dns-proxy route.
+
+        Also deletes any auto-split siblings (`name_2`, `name_3`, ...)
+        so that Apply→Delete→Re-apply doesn't leave orphan split-groups
+        on the router.
+        """
+        # Main group.
         self.run(f'no dns-proxy route object-group {name}')
         self.run(f'no object-group fqdn {name}')
+        # Split siblings: try _2.._9 (more than 9 chunks = pathological).
+        for i in range(2, 10):
+            sib = f'{name}_{i}'
+            # Speculatively delete; `no object-group fqdn <nonexistent>`
+            # is a no-op on Keenetic (returns a warning, not an error).
+            self.run(f'no dns-proxy route object-group {sib}')
+            self.run(f'no object-group fqdn {sib}')
 
     def add_ip_route(self, network: str, mask: str, interface: str,
                      auto: bool = True, reject: bool = False) -> str:

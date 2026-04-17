@@ -1122,11 +1122,15 @@ class App(tk.Tk):
                     continue
                 includes = list(svc.get('fqdn', [])) + list(svc.get('ipv4_cidr', []))
                 c.delete_fqdn_group(group)
-                errs = c.create_fqdn_group(group, includes,
-                                            description=svc.get('name', ''))
+                created_names, errs = c.create_fqdn_group(
+                    group, includes, description=svc.get('name', ''))
                 for e in errs:
                     self.ui_queue.put(('log', ('warn', f'  {group}: {e}')))
-                c.bind_fqdn_route(group, iface, auto=True, reject=exclusive)
+                # Bind EVERY created group (including split-parts like
+                # name_2, name_3) to the VPN interface. Without this,
+                # traffic to domains in split-parts leaks via ISP.
+                for gn in created_names:
+                    c.bind_fqdn_route(gn, iface, auto=True, reject=exclusive)
                 total_inc += len(includes)
                 suffix = ' [kill switch]' if exclusive else ''
                 self.ui_queue.put(('log', ('ok',

@@ -53,12 +53,29 @@ def is_valid_fqdn(fqdn: str) -> bool:
     return all(_FQDN_LABEL_RE.match(lab) for lab in labels)
 
 
+def _to_idna(name: str) -> str:
+    """Convert a Unicode domain to Punycode (IDNA/RFC 3490).
+
+    Returns the original string on failure — the caller will then run
+    ``is_valid_fqdn`` and discover the ASCII check still rejects it, so
+    nothing sneaks through. Empty labels trigger the IDNA library's own
+    error, so we guard against them explicitly first.
+    """
+    if not name or '..' in name or name.startswith('.'):
+        return name
+    try:
+        return name.encode('idna').decode('ascii')
+    except (UnicodeError, UnicodeEncodeError):
+        return name
+
+
 def normalize_fqdn(fqdn: str) -> tuple[str, str]:
     """Return (normalized, warning_or_empty).
 
     - `*.example.com` → `example.com` + warning about auto-suffix-match.
     - Trailing dot stripped.
-    - IDN stays as-is (caller must Punycode before).
+    - Unicode domain (`магазин.рф`) → Punycode (`xn--80aamfmxlh.xn--p1ai`)
+      with a warning that conversion happened.
     - Invalid FQDNs returned unchanged with a warning.
     """
     name = fqdn.strip().rstrip('.')
@@ -68,6 +85,16 @@ def normalize_fqdn(fqdn: str) -> tuple[str, str]:
         name = name[m.end():]
         warn = (f'wildcard {fqdn!r} → {name!r} '
                 '(Keenetic auto-matches all subdomains)')
+    # Punycode-convert before the ASCII check so Unicode domains are
+    # accepted. Keenetic's CLI only takes ASCII / Punycode anyway.
+    if not name.isascii():
+        idn = _to_idna(name)
+        if idn != name and idn.isascii():
+            if warn:
+                warn += f'; IDN → {idn!r}'
+            else:
+                warn = f'IDN {name!r} → {idn!r} (Punycode)'
+            name = idn
     if not is_valid_fqdn(name):
         return fqdn.strip(), f'invalid FQDN: {fqdn!r}'
     return name, warn

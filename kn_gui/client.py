@@ -13,20 +13,10 @@ import socket
 import time
 from typing import Optional
 
+from .cli_safety import IFACE_TYPES, sanitize_cli_value as _sanitize_cli_value
 from .constants import DEFAULT_TELNET_PORT
 from .utils import (MAX_ENTRIES_PER_GROUP, is_error_output, strip_ansi,
                     validate_fqdns, validate_group_name)
-
-
-def _sanitize_cli_value(s: str) -> str:
-    """Strip characters that could break a Telnet CLI command.
-
-    Newlines are the critical ones: a \\n in a description or password
-    field would split a single Telnet command into two, letting the
-    second half be interpreted as a separate CLI instruction — a classic
-    injection vector when the data comes from an imported catalog URL.
-    """
-    return s.replace('\n', ' ').replace('\r', '').replace('\x00', '')
 
 
 class KeeneticClient:
@@ -194,28 +184,9 @@ class KeeneticClient:
 
     # ── Introspection ─────────────────────────────────────────────────────
     def list_interfaces(self) -> list[dict]:
+        from .cli_safety import parse_interfaces_text
         out, _ = self.run('show interface', timeout=15.0)
-        ifaces: list[dict] = []
-        current: dict = {}
-        for line in out.splitlines():
-            line = line.strip()
-            if line.startswith('interface-name:'):
-                if current.get('name'):
-                    ifaces.append(current)
-                current = {'name': line.split(':', 1)[1].strip()}
-            elif line.startswith('type:'):
-                current['type'] = line.split(':', 1)[1].strip()
-            elif line.startswith('description:'):
-                current['description'] = line.split(':', 1)[1].strip()
-            elif line.startswith('link:'):
-                current['link'] = line.split(':', 1)[1].strip()
-            elif line.startswith('connected:'):
-                current['connected'] = line.split(':', 1)[1].strip()
-        if current.get('name'):
-            ifaces.append(current)
-        return [i for i in ifaces if i.get('type') in
-                ('PPPoE', 'SSTP', 'L2TP', 'PPTP', 'Wireguard', 'OpenVPN',
-                 'ZeroTier', 'GigabitEthernet', 'Vlan', 'Ipoe', 'Ipip', 'Gre')]
+        return parse_interfaces_text(out)
 
     def running_config(self) -> str:
         out, ok = self.run('show running-config', timeout=20.0)
@@ -348,18 +319,18 @@ class KeeneticClient:
     def delete_fqdn_group(self, name: str) -> None:
         """Delete the FQDN group and its dns-proxy route.
 
-        Also deletes any auto-split siblings (`name_2`, `name_3`, ...)
-        so that Apply→Delete→Re-apply doesn't leave orphan split-groups
-        on the router.
+        Also deletes any auto-split siblings (`name_2`, `name_3`, …) so
+        that Apply→Delete→Re-apply doesn't leave orphan split-groups on
+        the router. The range covers up to _50 — enough for ~15 000
+        FQDN entries, well past any realistic service catalog; larger
+        lists would hit the router's global limits first.
         """
-        # Main group.
         self.run(f'no dns-proxy route object-group {name}')
         self.run(f'no object-group fqdn {name}')
-        # Split siblings: try _2.._9 (more than 9 chunks = pathological).
-        for i in range(2, 10):
+        # Speculatively delete: `no object-group fqdn <nonexistent>` is
+        # a no-op (warning, not error) on NDMS 5.x.
+        for i in range(2, 51):
             sib = f'{name}_{i}'
-            # Speculatively delete; `no object-group fqdn <nonexistent>`
-            # is a no-op on Keenetic (returns a warning, not an error).
             self.run(f'no dns-proxy route object-group {sib}')
             self.run(f'no object-group fqdn {sib}')
 

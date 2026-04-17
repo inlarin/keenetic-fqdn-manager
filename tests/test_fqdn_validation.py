@@ -56,6 +56,37 @@ def test_normalize_strips_trailing_dot():
     assert warn == ''
 
 
+def test_normalize_idn_punycode():
+    """Unicode domain must be converted to Punycode, not rejected."""
+    name, warn = normalize_fqdn('пример.рф')
+    assert name.startswith('xn--'), f'expected Punycode, got {name!r}'
+    assert '.xn--' in name, 'both labels should be Punycoded'
+    assert 'IDN' in warn or 'Punycode' in warn
+
+
+def test_normalize_idn_ascii_passthrough():
+    """ASCII domain must not be touched by the IDN path."""
+    name, warn = normalize_fqdn('example.com')
+    assert name == 'example.com'
+    assert warn == ''
+
+
+def test_normalize_idn_with_wildcard():
+    """`*.магазин.рф` — strip wildcard AND Punycode at once."""
+    name, warn = normalize_fqdn('*.магазин.рф')
+    assert name.startswith('xn--')
+    # Warning mentions both wildcard and IDN.
+    assert 'wildcard' in warn.lower() or '→' in warn
+    assert 'IDN' in warn or 'xn--' in warn
+
+
+def test_normalize_preserves_already_punycode():
+    """An already-ASCII Punycode name (xn--...) must not be warned about."""
+    name, warn = normalize_fqdn('xn--e1afmkfd.xn--p1ai')
+    assert name == 'xn--e1afmkfd.xn--p1ai'
+    assert warn == ''  # already ASCII — no conversion
+
+
 def test_normalize_returns_invalid_warning():
     name, warn = normalize_fqdn('')
     assert 'invalid' in warn

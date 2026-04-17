@@ -29,13 +29,24 @@ from __future__ import annotations
 
 import http.cookiejar
 import json
+import logging
 import ssl
+import threading
 import urllib.error
 import urllib.request
 from hashlib import md5, sha256
 from typing import Any, Optional
 
 from .constants import APP_NAME, APP_VERSION, MAX_HTTP_BYTES
+
+LOGGER = logging.getLogger(__name__)
+
+# How many times we may silently re-auth inside a single request when the
+# server answers 401. One retry is the normal "session expired on router
+# side" case; a second consecutive 401 means something is wrong (password
+# changed, account locked, endpoint disabled) and we should surface it
+# rather than loop.
+_MAX_AUTH_RETRIES = 1
 
 
 def _join_message(msg) -> str:
@@ -224,6 +235,10 @@ class RCIClient:
         self._authed = False
         self._user: Optional[str] = None
         self._password: Optional[str] = None
+        # Serialises the auth-handshake so two threads simultaneously
+        # hitting a 401 don't both drive _do_auth_flow() in parallel
+        # (thundering-herd on the router's webd).
+        self._auth_lock = threading.Lock()
 
     # ── Context manager ──────────────────────────────────────────────────
     def __enter__(self) -> 'RCIClient':
@@ -233,7 +248,25 @@ class RCIClient:
         self.close()
 
     def close(self) -> None:
-        # Cookie jar is discarded; server session will expire on its own.
+        """Best-effort session termination.
+
+        Sends `POST /auth` with empty body to tell the router to drop the
+        session — this keeps the router's active-session counter from
+        growing across repeated connect/disconnect cycles (e.g. during
+        debugging). Cookies are cleared locally regardless of whether
+        the server accepted the logout.
+        """
+        if self._authed:
+            try:
+                # Best effort: don't block shutdown on a slow router.
+                self._request('POST', '/auth/logout')
+            except Exception:
+                # Some NDMS versions don't expose /auth/logout; fall
+                # back to clearing the cookie jar only.
+                try:
+                    self._request('DELETE', '/auth')
+                except Exception:
+                    pass
         self._cookies.clear()
         self._authed = False
 
@@ -269,42 +302,55 @@ class RCIClient:
 
         Raises RCIAuthError on failure. Credentials are remembered so that
         a subsequent 401 (session expiry) can be re-handshaked transparently.
+        Any lingering cookies from a previous session are cleared first so
+        the router doesn't see a stale cookie alongside the new request.
         """
+        self._cookies.clear()
         self._user = user
         self._password = password
         self._authed = False
         self._do_auth_flow()
 
     def _do_auth_flow(self) -> None:
-        if self._user is None or self._password is None:
-            raise RCIAuthError('call login() first')
+        """Perform (or re-perform) the challenge-response handshake.
 
-        status, headers, _ = self._request('GET', '/auth')
-        if status == 200:
-            # Already authenticated (shouldn't happen on first login).
-            self._authed = True
-            return
+        Serialized via ``self._auth_lock`` — if two threads race into
+        this method after a 401, only one actually drives the handshake;
+        the second observes ``self._authed`` already True and exits.
+        """
+        with self._auth_lock:
+            if self._authed:
+                # Another thread completed the handshake while we waited.
+                return
+            if self._user is None or self._password is None:
+                raise RCIAuthError('call login() first')
 
-        realm = headers.get('X-NDM-Realm', '')
-        challenge = headers.get('X-NDM-Challenge', '')
-        if not realm or not challenge:
-            raise RCIAuthError(
-                f'/auth returned {status} without X-NDM-Realm/X-NDM-Challenge; '
-                f'either the router lacks the http-proxy component or the '
-                f'endpoint is disabled'
+            status, headers, _ = self._request('GET', '/auth')
+            if status == 200:
+                # Already authenticated (shouldn't happen on first login).
+                self._authed = True
+                return
+
+            realm = headers.get('X-NDM-Realm', '')
+            challenge = headers.get('X-NDM-Challenge', '')
+            if not realm or not challenge:
+                raise RCIAuthError(
+                    f'/auth returned {status} without X-NDM-Realm/X-NDM-Challenge; '
+                    f'either the router lacks the http-proxy component or the '
+                    f'endpoint is disabled'
+                )
+
+            md5_hex = md5(f'{self._user}:{realm}:{self._password}'.encode()).hexdigest()
+            sha_hex = sha256(f'{challenge}{md5_hex}'.encode()).hexdigest()
+
+            status, _, body = self._request(
+                'POST', '/auth',
+                body={'login': self._user, 'password': sha_hex},
             )
-
-        md5_hex = md5(f'{self._user}:{realm}:{self._password}'.encode()).hexdigest()
-        sha_hex = sha256(f'{challenge}{md5_hex}'.encode()).hexdigest()
-
-        status, _, body = self._request(
-            'POST', '/auth',
-            body={'login': self._user, 'password': sha_hex},
-        )
-        if status != 200:
-            snippet = body[:120].decode('utf-8', 'replace') if body else ''
-            raise RCIAuthError(f'/auth POST rejected (HTTP {status}): {snippet}')
-        self._authed = True
+            if status != 200:
+                snippet = body[:120].decode('utf-8', 'replace') if body else ''
+                raise RCIAuthError(f'/auth POST rejected (HTTP {status}): {snippet}')
+            self._authed = True
 
     # ── Command invocation ───────────────────────────────────────────────
     def get(self, rci_path: str) -> Any:
@@ -316,11 +362,18 @@ class RCIClient:
             self._do_auth_flow()
         path = 'rci/' + rci_path.strip('/').replace(' ', '/')
         status, _, body = self._request('GET', path)
-        if status == 401:
-            # Session expired; one-shot reauth + retry.
+        # At most _MAX_AUTH_RETRIES (= 1) silent re-auth + retry. A second
+        # consecutive 401 is surfaced as an error instead of looping.
+        for _ in range(_MAX_AUTH_RETRIES):
+            if status != 401:
+                break
             self._authed = False
             self._do_auth_flow()
             status, _, body = self._request('GET', path)
+        if status == 401:
+            raise RCIAuthError(
+                f'GET {path} still 401 after reauth — credentials may have '
+                f'changed or the account is locked')
         if status == 404:
             return None
         if status != 200:
@@ -337,10 +390,16 @@ class RCIClient:
             self._do_auth_flow()
         path = 'rci/' + rci_path.strip('/').replace(' ', '/')
         status, _, raw = self._request('POST', path, body=body)
-        if status == 401:
+        for _ in range(_MAX_AUTH_RETRIES):
+            if status != 401:
+                break
             self._authed = False
             self._do_auth_flow()
             status, _, raw = self._request('POST', path, body=body)
+        if status == 401:
+            raise RCIAuthError(
+                f'POST {path} still 401 after reauth — credentials may have '
+                f'changed or the account is locked')
         if status == 404:
             return None
         if status != 200:
@@ -357,42 +416,61 @@ class RCIClient:
     def parse(self, cli_command: str) -> dict:
         """Execute an arbitrary CLI command via POST /rci/parse.
 
-        This is the universal write-path: every CLI command works here,
-        including context-sensitive ones (object-group → include → exit).
-        The router maintains a per-session CLI context just like Telnet.
+        Universal write-path: every CLI command works here, including
+        context-sensitive ones (object-group → include → exit). The
+        router maintains a per-session CLI context just like Telnet.
 
         Returns the parsed JSON response, typically:
             {"parse": "<echoed command>", "prompt": "(config)>", "status": [...]}
 
-        `status` is a list of result objects; an empty list or list of
-        dicts without 'error' keys means success.
+        Goes through ``_request`` so that re-auth, size cap, and lock
+        behaviour are consistent with `get()`/`post()`. Re-auth is capped
+        at _MAX_AUTH_RETRIES; a second 401 surfaces as RCIAuthError
+        instead of looping.
         """
         if not self._authed:
             self._do_auth_flow()
-        # /rci/parse expects the command as a bare JSON string.
-        data = json.dumps(cli_command).encode('utf-8')
-        headers = {
-            'User-Agent': f'{APP_NAME}/{APP_VERSION}',
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-        }
+
+        # /rci/parse expects the command as a bare JSON string, not a
+        # `{"command": "..."}` object. We hand-roll the body via the
+        # standard `_request` which already handles the size cap.
+        raw_body = json.dumps(cli_command).encode('utf-8')
         req = urllib.request.Request(
-            f'{self.base}/rci/parse', data=data, method='POST', headers=headers)
-        try:
-            with self._opener.open(req, timeout=self.timeout) as resp:
-                raw = resp.read(MAX_HTTP_BYTES + 1)
-                if len(raw) > MAX_HTTP_BYTES:
-                    raise RCICommandError('parse response too large')
-                return json.loads(raw.decode('utf-8', 'replace'))
-        except urllib.error.HTTPError as e:
-            if e.code == 401:
-                self._authed = False
-                self._do_auth_flow()
-                # Retry once after re-auth.
+            f'{self.base}/rci/parse', data=raw_body, method='POST',
+            headers={
+                'User-Agent': f'{APP_NAME}/{APP_VERSION}',
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+            })
+
+        def _send() -> tuple[int, bytes]:
+            try:
                 with self._opener.open(req, timeout=self.timeout) as resp:
-                    raw = resp.read(MAX_HTTP_BYTES + 1)
-                    return json.loads(raw.decode('utf-8', 'replace'))
-            raise RCICommandError(f'parse {cli_command!r}: HTTP {e.code}') from e
+                    buf = resp.read(MAX_HTTP_BYTES + 1)
+                    if len(buf) > MAX_HTTP_BYTES:
+                        raise RCICommandError('parse response too large')
+                    return resp.status, buf
+            except urllib.error.HTTPError as e:
+                return e.code, (e.read() if hasattr(e, 'read') else b'')
+
+        status, buf = _send()
+        for _ in range(_MAX_AUTH_RETRIES):
+            if status != 401:
+                break
+            self._authed = False
+            self._do_auth_flow()
+            status, buf = _send()
+        if status == 401:
+            raise RCIAuthError(
+                f'parse {cli_command!r} still 401 after reauth — '
+                f'credentials may have changed or the account is locked')
+        if status != 200:
+            raise RCICommandError(f'parse {cli_command!r}: HTTP {status}')
+        try:
+            return json.loads(buf.decode('utf-8', 'replace'))
+        except json.JSONDecodeError as e:
+            raise RCICommandError(
+                f'parse {cli_command!r}: invalid JSON: {e}') from e
 
     def parse_batch(self, commands: list[str]) -> list[dict]:
         """Execute multiple CLI commands sequentially via /rci/parse.

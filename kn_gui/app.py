@@ -141,75 +141,66 @@ class App(tk.Tk):
         """Non-blocking update check at startup. Silent on failure or
         when already up-to-date — only shows a dialog if a new version
         is available."""
-        from .updater import check_for_update
-
-        def do():
-            return check_for_update(timeout=6.0)
-
-        def done(info, err):
-            if err is not None or info is None:
-                return  # silent on errors at startup
-            if not info.available:
-                return  # up-to-date, nothing to show
-            if info.download_url:
-                if messagebox.askyesno(
-                        f'{APP_NAME} — обновление',
-                        f'Доступна новая версия: v{info.latest}\n'
-                        f'(текущая: v{info.current})\n\n'
-                        'Скачать и установить автоматически?'):
-                    self._download_and_apply(info)
-            else:
-                from .updater import open_release_page
-                if messagebox.askyesno(
-                        f'{APP_NAME} — обновление',
-                        f'Доступна новая версия: v{info.latest}\n'
-                        f'(текущая: v{info.current})\n\n'
-                        'Открыть страницу загрузки?'):
-                    open_release_page(info.release_url)
-
-        self.worker.run(do, on_done=done)
+        self._run_update_check(timeout=6.0, verbose=False)
 
     def _check_update_manual(self):
         """Explicit menu-triggered update check — shows result even when
         up-to-date or on error."""
+        self._run_update_check(timeout=10.0, verbose=True)
+
+    def _run_update_check(self, timeout: float, verbose: bool) -> None:
+        """Shared worker for both update-check entry points.
+
+        Args:
+            timeout:  HTTP timeout for the GitHub API call.
+            verbose:  When True, show up-to-date / error dialogs too
+                      (manual check); when False, only surface when a
+                      newer version is actually available (startup).
+        """
         from .updater import check_for_update
 
         def do():
-            return check_for_update(timeout=10.0)
+            return check_for_update(timeout=timeout)
 
         def done(info, err):
-            if err is not None:
-                messagebox.showwarning(APP_NAME,
-                                       f'Не удалось проверить обновления:\n{err}')
-                return
-            if info is None:
-                messagebox.showinfo(APP_NAME, 'Не удалось получить информацию.')
+            if err is not None or info is None:
+                if verbose:
+                    msg = str(err) if err is not None else 'Неизвестная ошибка.'
+                    messagebox.showwarning(
+                        APP_NAME, f'Не удалось проверить обновления:\n{msg}')
                 return
             if info.error:
-                messagebox.showwarning(APP_NAME,
-                                       f'Ошибка проверки:\n{info.error}')
+                if verbose:
+                    messagebox.showwarning(
+                        APP_NAME, f'Ошибка проверки:\n{info.error}')
                 return
             if not info.available:
-                messagebox.showinfo(APP_NAME,
-                                    f'Установлена актуальная версия v{info.current}.')
+                if verbose:
+                    messagebox.showinfo(
+                        APP_NAME,
+                        f'Установлена актуальная версия v{info.current}.')
                 return
-            if info.download_url:
-                if messagebox.askyesno(
-                        f'{APP_NAME} — обновление',
-                        f'Доступна новая версия: v{info.latest}\n'
-                        f'(текущая: v{info.current})\n\n'
-                        'Скачать и установить автоматически?'):
-                    self._download_and_apply(info)
-            else:
-                from .updater import open_release_page
-                if messagebox.askyesno(
-                        f'{APP_NAME} — обновление',
-                        f'Доступна новая версия: v{info.latest}\n'
-                        f'(текущая: v{info.current})\n\n'
-                        'Открыть страницу загрузки?'):
-                    open_release_page(info.release_url)
+            self._offer_update(info)
 
         self.worker.run(do, on_done=done)
+
+    def _offer_update(self, info) -> None:
+        """Ask the user whether to install / open the page for `info`."""
+        if info.download_url:
+            if messagebox.askyesno(
+                    f'{APP_NAME} — обновление',
+                    f'Доступна новая версия: v{info.latest}\n'
+                    f'(текущая: v{info.current})\n\n'
+                    'Скачать и установить автоматически?'):
+                self._download_and_apply(info)
+        else:
+            from .updater import open_release_page
+            if messagebox.askyesno(
+                    f'{APP_NAME} — обновление',
+                    f'Доступна новая версия: v{info.latest}\n'
+                    f'(текущая: v{info.current})\n\n'
+                    'Открыть страницу загрузки?'):
+                open_release_page(info.release_url)
 
     def _download_and_apply(self, info) -> None:
         """Show a progress dialog, download the new exe, then apply the update.
@@ -221,11 +212,16 @@ class App(tk.Tk):
         """
         import os
         import tempfile
-        from .updater import IS_FROZEN, apply_update, download_update
+        from .updater import (IS_FROZEN, _safe_version_token, apply_update,
+                              download_update)
 
+        # Sanitize the version token before baking it into a filesystem
+        # path. A compromised GitHub response could otherwise smuggle
+        # `../` or quotes into the tempfile name / PowerShell script.
+        safe_tag = _safe_version_token(info.latest) or 'new'
         dest = os.path.join(
             tempfile.gettempdir(),
-            f'KeeneticFqdnManager_{info.latest}.exe',
+            f'KeeneticFqdnManager_{safe_tag}.exe',
         )
 
         # ── Progress dialog ──────────────────────────────────────────────
@@ -289,6 +285,7 @@ class App(tk.Tk):
                     info.download_url, dest,
                     on_progress=_on_progress,
                     is_cancelled=cancelled.is_set,
+                    expected_sha256=info.sha256,
                 )
             except Exception as exc:
                 error_box[0] = exc

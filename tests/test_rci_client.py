@@ -306,3 +306,91 @@ def test_looks_like_cli_text():
     # Empty — rejected.
     assert not _looks_like_cli_text('')
     assert not _looks_like_cli_text('   ')
+
+
+# ── _config_from_json ──────────────────────────────────────────────────────
+
+def test_config_from_json_object_group_fqdn_as_dict():
+    """Shape typical of NDMS 4.x: include as dict with host[]."""
+    from kn_gui.rci_client import _config_from_json
+    text = _config_from_json({
+        'object-group': {
+            'fqdn': {
+                'telegram': {
+                    'include': {
+                        'host': [{'name': 't.me'}, {'name': 'telegram.org'}],
+                    }
+                }
+            }
+        }
+    })
+    assert 'object-group fqdn telegram' in text
+    assert 'include t.me' in text
+    assert 'include telegram.org' in text
+
+
+def test_config_from_json_object_group_fqdn_as_list():
+    """Alternative shape: include as list of dicts or strings."""
+    from kn_gui.rci_client import _config_from_json
+    text = _config_from_json({
+        'object-group': {
+            'fqdn': {
+                'x': {'include': [{'host': 'a.com'}, 'b.com']},
+            }
+        }
+    })
+    assert 'include a.com' in text
+    assert 'include b.com' in text
+
+
+def test_config_from_json_dns_proxy_route():
+    from kn_gui.rci_client import _config_from_json
+    text = _config_from_json({
+        'dns-proxy': {
+            'route': [
+                {'object-group': 'telegram', 'interface': 'SSTP0',
+                 'auto': True, 'reject': True},
+            ]
+        }
+    })
+    assert 'dns-proxy' in text
+    assert 'route object-group telegram SSTP0 auto reject' in text
+
+
+def test_config_from_json_ip_route():
+    from kn_gui.rci_client import _config_from_json
+    text = _config_from_json({
+        'ip': {
+            'route': [
+                {'network': '91.108.4.0', 'mask': '255.255.252.0',
+                 'interface': 'SSTP0', 'auto': True},
+            ]
+        }
+    })
+    assert 'ip route 91.108.4.0 255.255.252.0 SSTP0 auto' in text
+
+
+def test_config_from_json_empty_input():
+    """None or empty dict → empty string, no exceptions."""
+    from kn_gui.rci_client import _config_from_json
+    assert _config_from_json({}) == ''
+
+
+def test_config_from_json_unknown_shape_silently_ignored():
+    """Defensive parsing — unknown shapes must not raise."""
+    from kn_gui.rci_client import _config_from_json
+    # dns-proxy.route is a string here, which is none of the expected
+    # dict/list shapes; the parser should just skip it without exception.
+    text = _config_from_json({'dns-proxy': {'route': 'garbage'}})
+    # Nothing produced, but no crash either.
+    assert isinstance(text, str)
+
+
+def test_join_message_handles_list_format():
+    """Netcraze OEM returns message as list — must join with \\n."""
+    from kn_gui.rci_client import _join_message
+    assert _join_message(['a', 'b', 'c']) == 'a\nb\nc'
+    assert _join_message('plain string') == 'plain string'
+    assert _join_message(None) == ''
+    # Skips None elements inside the list.
+    assert _join_message(['a', None, 'b']) == 'a\nb'

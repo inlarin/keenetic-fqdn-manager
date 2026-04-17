@@ -22,43 +22,16 @@ import re
 import time
 from typing import Optional
 
-from .constants import DEFAULT_TELNET_PORT
+from .cli_safety import (IFACE_TYPES, parse_interfaces_text,
+                          sanitize_cli_value as _sanitize_cli_value)
 from .rci_client import RCIAuthError, RCIClient, RCICommandError
 from .utils import (MAX_ENTRIES_PER_GROUP, is_error_output,
                     validate_fqdns, validate_group_name)
 
 
-def _sanitize_cli_value(s: str) -> str:
-    """Strip characters that could break a CLI command via /rci/parse."""
-    return s.replace('\n', ' ').replace('\r', '').replace('\x00', '')
-
-
-def _parse_interfaces_text(text: str) -> list[dict]:
-    """Parse `show interface` CLI output into a list of dicts.
-
-    Mirrors the parser in `client.KeeneticClient.list_interfaces()` so
-    that RCI and Telnet paths produce the exact same structure.
-    """
-    allowed_types = KeeneticRCIClient.IFACE_TYPES
-    ifaces: list[dict] = []
-    current: dict = {}
-    for line in text.splitlines():
-        s = line.strip()
-        if s.startswith('interface-name:'):
-            if current.get('name'):
-                ifaces.append(current)
-            current = {'name': s.split(':', 1)[1].strip()}
-        elif s.startswith('type:'):
-            current['type'] = s.split(':', 1)[1].strip()
-        elif s.startswith('description:'):
-            current['description'] = s.split(':', 1)[1].strip()
-        elif s.startswith('link:'):
-            current['link'] = s.split(':', 1)[1].strip()
-        elif s.startswith('connected:'):
-            current['connected'] = s.split(':', 1)[1].strip()
-    if current.get('name'):
-        ifaces.append(current)
-    return [i for i in ifaces if i.get('type') in allowed_types]
+# Kept as a module-level alias for legacy code paths / tests that
+# reference the old helper name by full qualified path.
+_parse_interfaces_text = parse_interfaces_text
 
 
 class KeeneticRCIClient:
@@ -72,8 +45,9 @@ class KeeneticRCIClient:
         client.close()
     """
 
-    IFACE_TYPES = ('PPPoE', 'SSTP', 'L2TP', 'PPTP', 'Wireguard', 'OpenVPN',
-                   'ZeroTier', 'GigabitEthernet', 'Vlan', 'Ipoe', 'Ipip', 'Gre')
+    # Class alias to the module-wide tuple — existing code still uses
+    # `self.IFACE_TYPES`, and the tuple is defined once in cli_safety.
+    IFACE_TYPES = IFACE_TYPES
 
     def __init__(self, host: str, port: int = 80, use_https: bool = False):
         self.host = host
@@ -123,28 +97,45 @@ class KeeneticRCIClient:
     # ── Low-level command execution ──────────────────────────────────────
 
     def run(self, cmd: str, timeout: float = 10.0) -> tuple[str, bool]:
-        """Execute cmd via /rci/parse. Returns (output_text, success).
+        """Execute cmd via /rci/parse. Returns (output_text, prompt_seen).
 
-        Maps the RCI parse-response to the same (text, prompt_seen) tuple
-        that KeeneticClient.run() returns, so callers don't change.
+        Maps the RCI parse-response to the same shape that
+        ``KeeneticClient.run()`` returns (text, prompt_seen). `prompt_seen`
+        is the RCI equivalent of "the CLI replied and we saw a prompt"
+        — used by ``run_expect`` to distinguish "command executed" from
+        "nothing happened".
+
+        Error detection: if the response carries a ``status[*].error``
+        marker (Netcraze OEM convention), that text is surfaced in the
+        returned string so ``is_error_output`` catches it downstream.
         """
         old_timeout = self._rci.timeout
         self._rci.timeout = timeout
         try:
             resp = self._rci.parse(cmd)
-            # /rci/parse returns {"parse": "...", "prompt": "...", "status": [...]}
             text = ''
+            ok = False
             if isinstance(resp, dict):
-                # Collect text from status entries.
-                for s in resp.get('status', []):
+                status_items = resp.get('status', []) or []
+                # Collect text from status entries, including `error`
+                # fields so the downstream is_error_output can fire.
+                chunks: list[str] = []
+                for s in status_items:
                     if isinstance(s, dict):
-                        msg = s.get('message', '') or s.get('text', '')
+                        msg = (s.get('message') or s.get('text')
+                               or s.get('error') or '')
                         if msg:
-                            text += msg + '\n'
-                # Also include 'parse' echo if present.
-                text = text or resp.get('parse', '') or ''
+                            chunks.append(str(msg))
+                text = '\n'.join(chunks)
+                if not text:
+                    text = resp.get('parse', '') or ''
                 prompt = resp.get('prompt', '')
-                return text, bool(prompt)
+                # Success requires SOME evidence the command ran:
+                # either a prompt echo, or a non-empty status list, or
+                # any text payload. An all-empty reply is treated as
+                # failure so callers don't mistake silent no-ops for OK.
+                ok = bool(prompt or status_items or text)
+                return text, ok
             return str(resp), True
         except (RCICommandError, RCIAuthError) as e:
             return str(e), False
@@ -293,9 +284,10 @@ class KeeneticRCIClient:
         return self.run_expect(' '.join(parts))
 
     def delete_fqdn_group(self, name: str) -> None:
+        """Delete group + speculatively remove auto-split siblings up to _50."""
         self.run(f'no dns-proxy route object-group {name}')
         self.run(f'no object-group fqdn {name}')
-        for i in range(2, 10):
+        for i in range(2, 51):
             sib = f'{name}_{i}'
             self.run(f'no dns-proxy route object-group {sib}')
             self.run(f'no object-group fqdn {sib}')

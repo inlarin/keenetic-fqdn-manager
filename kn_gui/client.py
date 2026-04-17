@@ -18,6 +18,17 @@ from .utils import (MAX_ENTRIES_PER_GROUP, is_error_output, strip_ansi,
                     validate_fqdns, validate_group_name)
 
 
+def _sanitize_cli_value(s: str) -> str:
+    """Strip characters that could break a Telnet CLI command.
+
+    Newlines are the critical ones: a \\n in a description or password
+    field would split a single Telnet command into two, letting the
+    second half be interpreted as a separate CLI instruction — a classic
+    injection vector when the data comes from an imported catalog URL.
+    """
+    return s.replace('\n', ' ').replace('\r', '').replace('\x00', '')
+
+
 class KeeneticClient:
     IAC = 0xff
     WILL, WONT, DO, DONT, SB, SE = 0xfb, 0xfc, 0xfd, 0xfe, 0xfa, 0xf0
@@ -306,7 +317,7 @@ class KeeneticClient:
             try:
                 self.run_expect(f'object-group fqdn {chunk_name}')
                 if description:
-                    safe = description.replace('"', '').strip()
+                    safe = _sanitize_cli_value(description).replace('"', '').strip()
                     if safe:
                         try:
                             self.run_expect(f'description "{safe}"')
@@ -386,12 +397,12 @@ class KeeneticClient:
             try_('no authentication password')
             try_('no description')
             if description:
-                safe = description.replace('"', '').strip()
+                safe = _sanitize_cli_value(description).replace('"', '').strip()
                 if safe:
                     try_(f'description "{safe}"', critical=True)
-            try_(f'peer {peer}',                           critical=True)
-            try_(f'authentication identity {user}',        critical=True)
-            try_(f'authentication password {password}',    critical=True)
+            try_(f'peer {_sanitize_cli_value(peer)}',                           critical=True)
+            try_(f'authentication identity {_sanitize_cli_value(user)}',        critical=True)
+            try_(f'authentication password {_sanitize_cli_value(password)}',    critical=True)
             try_('no ccp')
             try_('ip mtu 1400')
             try_('ip tcp adjust-mss pmtu')

@@ -47,13 +47,13 @@ def fetch_v2fly(url: str, force: bool = False) -> list[str]:
         # Try primary URL first.
         try:
             return _v2fly_parse(_http_get(url))
-        except Exception:
-            pass
-        # Fallback: swap GitHub raw → jsDelivr CDN.
-        if _V2FLY_RAW in url:
-            cdn_url = url.replace(_V2FLY_RAW, _V2FLY_CDN)
-            return _v2fly_parse(_http_get(cdn_url))
-        raise  # re-raise the original error if no fallback applies
+        except Exception as primary_err:
+            # Fallback: swap GitHub raw → jsDelivr CDN.
+            if _V2FLY_RAW in url:
+                cdn_url = url.replace(_V2FLY_RAW, _V2FLY_CDN)
+                return _v2fly_parse(_http_get(cdn_url))
+            # No fallback available — re-raise the original error.
+            raise primary_err
 
     return cached(f'v2fly:{url}', TTL_V2FLY, produce, force)
 

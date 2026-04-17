@@ -112,13 +112,34 @@ def validate_group_name(name: str) -> str | None:
     return None
 
 
+_ERROR_LINE_RE = re.compile(
+    r'(?i)^(?:'
+    r'error\s*[:\[]|'          # Error: ... / Error[7405602]: ...
+    r'invalid\s|'              # Invalid argument. / INVALID input
+    r'%%\s*(?:error|invalid)|' # %% Error / %% Invalid (CLI marker)
+    r'Command::\w+\s+error'    # Command::Base error[...]: ...
+    r')',
+)
+
+
 def is_error_output(text: str) -> bool:
-    """Heuristic: Keenetic CLI error lines contain 'error' or 'invalid'.
-    Single helper so we don't sprinkle substring checks all over."""
+    """Detect Keenetic CLI error replies.
+
+    Matches lines starting with:
+    - `Error:` / `Error[...]`
+    - `Invalid <something>`
+    - `%% Error` / `%% Invalid` (CLI markers)
+    - `Command::Module error[code]`
+
+    Avoids false positives on 'mirror', 'error-correction', etc.
+    by requiring a specific delimiter after the keyword.
+    """
     if not text:
         return False
-    lo = text.lower()
-    return 'rror' in lo or 'nvalid' in lo
+    for line in text.splitlines():
+        if _ERROR_LINE_RE.match(line.strip()):
+            return True
+    return False
 
 
 def load_ui_config() -> dict:

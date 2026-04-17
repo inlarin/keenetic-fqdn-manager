@@ -69,10 +69,13 @@ class DiskCache:
                 except OSError:
                     pass
                 raise
-        except Exception:
+        except Exception as exc:
             # A full disk or permission error should not crash the app;
             # next access will simply see no cache hit and re-fetch.
-            pass
+            # Log the problem so prolonged failures are visible.
+            import logging
+            logging.getLogger('kn_gui.cache').warning(
+                'cache write failed (non-fatal, will re-fetch): %s', exc)
 
     def get(self, key: str, max_age: float):
         with self._lock:

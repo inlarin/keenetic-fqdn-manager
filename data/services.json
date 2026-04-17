@@ -96,13 +96,7 @@
         "api.individual.githubcopilot.com",
         "api.business.githubcopilot.com"
       ],
-      "ipv4_cidr": [],
-      "upstream": [
-        {
-          "type": "v2fly",
-          "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/github"
-        }
-      ]
+      "ipv4_cidr": []
     },
     {
       "id": "gemini",
@@ -115,13 +109,7 @@
         "ai.google.dev",
         "generativelanguage.googleapis.com"
       ],
-      "ipv4_cidr": [],
-      "upstream": [
-        {
-          "type": "v2fly",
-          "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/google"
-        }
-      ]
+      "ipv4_cidr": []
     },
     {
       "id": "grok",
@@ -1059,7 +1047,6 @@
       "fqdn": [
         "icloud.com",
         "apple.com",
-        "mzstatic.com",
         "cdn-apple.com",
         "icloud-content.com",
         "me.com",

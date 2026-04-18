@@ -137,48 +137,10 @@ def main() -> int:
     app.nb.select(app.tab_catalog)
     grab(app, '05-catalog.png')
 
-    # 06 — Update-available dialog (mocked).
-    print('06-update-available (update dialog, mocked)')
-    app.nb.select(app.tab_services)
-    app.update_idletasks()
-    import tkinter as tk
-    from tkinter import ttk
-    dlg = tk.Toplevel(app)
-    dlg.title(f'Keenetic FQDN Manager — обновление')
-    dlg.resizable(False, False)
-    dlg.transient(app)
-    ttk.Label(
-        dlg, font=('Segoe UI', 10, 'bold'),
-        text='Доступна новая версия: v3.3.0',
-    ).pack(padx=24, pady=(18, 4))
-    ttk.Label(
-        dlg,
-        text='Текущая: v3.2.0',
-        foreground='#555',
-    ).pack(padx=24)
-    ttk.Label(
-        dlg,
-        text='• авто-поиск роутера в LAN\n'
-             '• проверка SHA-256 для .exe\n'
-             '• 23 новых теста',
-        justify='left',
-    ).pack(padx=24, pady=(10, 4))
-    pbar = ttk.Progressbar(dlg, length=380, mode='determinate',
-                            maximum=100, value=42)
-    pbar.pack(padx=24, pady=(12, 4))
-    ttk.Label(dlg, text='5.0 / 12.0 МБ',
-              foreground='#555').pack(padx=24)
-    btns = ttk.Frame(dlg, padding=(12, 12, 12, 14))
-    btns.pack()
-    ttk.Button(btns, text='Скачать и перезапустить',
-               style='Accent.TButton').pack(side='right', padx=(6, 0))
-    ttk.Button(btns, text='Позже').pack(side='right')
-    dlg.update_idletasks()
-    px = app.winfo_rootx() + (app.winfo_width() - dlg.winfo_width()) // 2
-    py = app.winfo_rooty() + (app.winfo_height() - dlg.winfo_height()) // 2
-    dlg.geometry(f'+{px}+{py}')
-    grab(dlg, '06-update-available.png')
-    dlg.destroy()
+    # NOTE: the self-update progress-dialog screenshot was removed in
+    # v3.4.6 along with the in-app download flow. The version check is
+    # now just a messagebox with "Открыть страницу загрузки?" which
+    # Windows renders natively — not worth a bespoke screenshot.
 
     # 07 — Discovery button / log highlight.
     # We capture the header + log area with a discovery-success log line.

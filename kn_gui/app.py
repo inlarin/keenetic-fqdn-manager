@@ -105,12 +105,8 @@ class App(tk.Tk):
         # tickets and for confirming that an auto-update actually swapped
         # the binary).
         self.log(f'{APP_NAME} v{APP_VERSION} — готов к работе', 'info')
-        # If the previous run attempted to update but the restart was
-        # rolled back (AV lock, AppLocker, truncated download, …), the
-        # PS1 left a status file. Surface it before the normal update
-        # check — otherwise we'd immediately prompt them to try again.
-        self._report_prior_update_failure()
-        # Non-blocking update check at startup.
+        # Non-blocking version check at startup — just notifies, never
+        # installs. See updater.py for why self-update was removed.
         self._check_update_async()
         # First-run UX: auto-scan LAN so the user doesn't have to think
         # about which subnet Keenetic is on.
@@ -150,58 +146,13 @@ class App(tk.Tk):
             'Пароль никогда не сохраняется между сессиями.',
         )
 
-    # ── Auto-update ────────────────────────────────────────────────────
-    def _report_prior_update_failure(self) -> None:
-        """Pick up any status file left by a failed PS1 restart.
-
-        The message explains to the user *why* the app still shows the
-        old version — previously an AV lock / AppLocker would silently
-        restart the old version and the user would just see an endless
-        "update available" prompt with no explanation.
-
-        Deferred via ``after(800, …)`` so the main window is painted
-        first; a messagebox popping on top of a half-drawn window is
-        jarring UX.
-        """
-        import os as _os
-        from .updater import pop_update_status
-
-        status = pop_update_status()
-        if not status:
-            return
-
-        kind = status['kind']
-        reason = status['reason'] or '(причина не записана)'
-        new_exe = status['new_exe']
-
-        headlines = {
-            'ROLLED_BACK':
-                'Обновление не удалось установить, запущена старая версия.',
-            'VANISHED':
-                'Скачанный файл обновления исчез перед установкой '
-                '(скорее всего удалён антивирусом).',
-            'TRUNCATED':
-                'Скачанный файл обновления оказался неполным. '
-                'Проверьте сеть и попробуйте снова.',
-            'ROLLBACK_FAILED':
-                'Обновление не удалось И откат не прошёл. '
-                'Приложение может быть в некорректном состоянии.',
-        }
-        head = headlines.get(kind, 'Обновление не установлено.')
-
-        details = [head, '', f'Причина: {reason}']
-        if new_exe and _os.path.exists(new_exe):
-            details.append('')
-            details.append(
-                f'Скачанный файл сохранён в:\n{new_exe}\n\n'
-                'Вы можете заменить текущий .exe вручную или повторить '
-                'обновление из меню «Справка → Проверить обновления».')
-
-        def _show():
-            messagebox.showwarning(f'{APP_NAME} — обновление', '\n'.join(details))
-
-        self.after(800, _show)
-
+    # ── Version check (manual-install only) ────────────────────────────
+    # Self-update shipped in v3.2.0..v3.4.5 was retired: silent AV locks,
+    # browser download deduplication (App (1).exe), UTF-8 BOM in the status
+    # file, DETACHED_PROCESS killing the PS1 under --windowed parent — one
+    # too many moving parts. Current design: notify on new version, open
+    # the releases page in the browser, user downloads and replaces the
+    # .exe manually. Simple and explicit.
     def _check_update_async(self):
         """Non-blocking update check at startup. Silent on failure or
         when already up-to-date — only shows a dialog if a new version
@@ -250,143 +201,21 @@ class App(tk.Tk):
         self.worker.run(do, on_done=done)
 
     def _offer_update(self, info) -> None:
-        """Ask the user whether to install / open the page for `info`."""
-        if info.download_url:
-            if messagebox.askyesno(
-                    f'{APP_NAME} — обновление',
-                    f'Доступна новая версия: v{info.latest}\n'
-                    f'(текущая: v{info.current})\n\n'
-                    'Скачать и установить автоматически?'):
-                self._download_and_apply(info)
-        else:
-            from .updater import open_release_page
-            if messagebox.askyesno(
-                    f'{APP_NAME} — обновление',
-                    f'Доступна новая версия: v{info.latest}\n'
-                    f'(текущая: v{info.current})\n\n'
-                    'Открыть страницу загрузки?'):
-                open_release_page(info.release_url)
+        """Tell the user there's a newer release and offer to open the
+        GitHub releases page in the browser.
 
-    def _download_and_apply(self, info) -> None:
-        """Show a progress dialog, download the new exe, then apply the update.
-
-        Uses a plain daemon thread (not the Worker) so the UI stays fully
-        responsive and the Worker remains free for other operations.
-        The progress bar is driven by ``self.after(0, ...)`` callbacks that
-        are safe to post from any thread.
+        No in-app download + install anymore — that caused more problems
+        than it solved (see updater.py docstring). The user downloads
+        the new .exe themselves and replaces the old one.
         """
-        import os
-        import tempfile
-        from .updater import (IS_FROZEN, _safe_version_token, apply_update,
-                              download_update)
+        from .updater import open_release_page
 
-        # Sanitize the version token before baking it into a filesystem
-        # path. A compromised GitHub response could otherwise smuggle
-        # `../` or quotes into the tempfile name / PowerShell script.
-        safe_tag = _safe_version_token(info.latest) or 'new'
-        dest = os.path.join(
-            tempfile.gettempdir(),
-            f'KeeneticFqdnManager_{safe_tag}.exe',
-        )
-
-        # ── Progress dialog ──────────────────────────────────────────────
-        dlg = tk.Toplevel(self)
-        dlg.title('Загрузка обновления')
-        dlg.resizable(False, False)
-        dlg.protocol('WM_DELETE_WINDOW', lambda: None)  # disable × button
-
-        ttk.Label(
-            dlg, text=f'Скачивание v{info.latest}…',
-            font=('Segoe UI', 10, 'bold'),
-        ).pack(padx=24, pady=(18, 6))
-
-        pbar = ttk.Progressbar(dlg, length=380, mode='determinate', maximum=100)
-        pbar.pack(padx=24, pady=4)
-
-        status_var = tk.StringVar(value='Инициализация…')
-        ttk.Label(dlg, textvariable=status_var,
-                  font=('Segoe UI', 9)).pack(padx=24, pady=(4, 4))
-
-        cancelled = threading.Event()
-
-        def _cancel():
-            cancelled.set()
-            btn_cancel.configure(state='disabled', text='Отмена…')
-
-        btn_cancel = ttk.Button(dlg, text='Отмена', command=_cancel, width=10)
-        btn_cancel.pack(pady=(6, 18))
-
-        dlg.update_idletasks()
-        px = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
-        py = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 2
-        dlg.geometry(f'+{px}+{py}')
-        dlg.grab_set()
-
-        # ── Background download ──────────────────────────────────────────
-        error_box: list = [None]
-
-        def _set_ui(pct: float, text: str) -> None:
-            try:
-                pbar['value'] = pct
-                status_var.set(text)
-            except Exception:
-                pass
-
-        def _on_progress(done: int, total: int) -> None:
-            if cancelled.is_set():
-                return
-            if total > 0:
-                pct = done / total * 100
-                mb_d = done / (1 << 20)
-                mb_t = total / (1 << 20)
-                self.after(0, lambda: _set_ui(pct, f'{mb_d:.1f} / {mb_t:.1f} МБ'))
-            else:
-                mb_d = done / (1 << 20)
-                self.after(0, lambda: _set_ui(0, f'{mb_d:.1f} МБ…'))
-
-        def _run() -> None:
-            try:
-                download_update(
-                    info.download_url, dest,
-                    on_progress=_on_progress,
-                    is_cancelled=cancelled.is_set,
-                    expected_sha256=info.sha256,
-                )
-            except Exception as exc:
-                error_box[0] = exc
-            self.after(0, _finish)
-
-        def _finish() -> None:
-            try:
-                dlg.grab_release()
-                dlg.destroy()
-            except Exception:
-                pass
-
-            if cancelled.is_set():
-                # Clean up partial file silently.
-                try:
-                    os.remove(dest)
-                except OSError:
-                    pass
-                return
-
-            if error_box[0]:
-                messagebox.showerror(APP_NAME,
-                                     f'Ошибка загрузки:\n{error_box[0]}')
-                return
-
-            if IS_FROZEN:
-                if messagebox.askyesno(
-                        f'{APP_NAME} — обновление',
-                        f'Версия v{info.latest} готова.\n'
-                        'Перезапустить приложение сейчас?'):
-                    apply_update(dest)
-            else:
-                # Dev mode: just report where the file landed.
-                messagebox.showinfo(APP_NAME, f'Файл скачан:\n{dest}')
-
-        threading.Thread(target=_run, daemon=True).start()
+        if messagebox.askyesno(
+                f'{APP_NAME} — обновление',
+                f'Доступна новая версия: v{info.latest}\n'
+                f'(текущая: v{info.current})\n\n'
+                'Открыть страницу загрузки?'):
+            open_release_page(info.release_url)
 
     # ── Styling ─────────────────────────────────────────────────────────
     def _init_style(self):

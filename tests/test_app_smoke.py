@@ -50,13 +50,11 @@ def app():
     saved = (
         App._check_update_async,
         App._autodiscover_on_first_run,
-        App._report_prior_update_failure,
         _utils.load_ui_config,
         _utils.save_ui_config,
     )
     App._check_update_async = lambda self: None
     App._autodiscover_on_first_run = lambda self: None
-    App._report_prior_update_failure = lambda self: None
     _utils.load_ui_config = lambda: {}
     _utils.save_ui_config = lambda cfg: None
 
@@ -71,7 +69,6 @@ def app():
             pass
         (App._check_update_async,
          App._autodiscover_on_first_run,
-         App._report_prior_update_failure,
          _utils.load_ui_config,
          _utils.save_ui_config) = saved
 

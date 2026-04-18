@@ -589,10 +589,24 @@ def apply_update(new_exe_path: str) -> None:
         # Windows-only flags — use getattr(... , 0) so the module stays
         # importable on Linux/macOS (where the test suite runs in CI).
         # apply_update is a no-op on non-frozen builds anyway.
+        #
+        # IMPORTANT: we deliberately do NOT set DETACHED_PROCESS here.
+        # Under PyInstaller --windowed the parent process has NO console
+        # (GUI subsystem). DETACHED_PROCESS asks Windows to detach the
+        # child from a console that doesn't exist — on at least some
+        # Win10/11 builds this leaves PowerShell with null stdio handles
+        # and it crashes before executing the first line of the script.
+        # Diagnosed empirically in v3.4.3: PS1 launched cleanly without
+        # DETACHED_PROCESS (variants B and C of diagnose_detach.py).
+        #
+        # CREATE_NEW_PROCESS_GROUP gives the child its own process
+        # group so Ctrl-C / SIGBREAK on the parent doesn't cascade.
+        # CREATE_NO_WINDOW hides the fleeting console window.
+        # That combination is enough to let the updater survive after
+        # sys.exit(0) below.
         _CNPG = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
-        _DET  = getattr(subprocess, 'DETACHED_PROCESS', 0)
         _CNW  = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-        creationflags = _CNPG | _DET | _CNW
+        creationflags = _CNPG | _CNW
         subprocess.Popen(
             [
                 'powershell.exe',

@@ -471,9 +471,15 @@ def test_apply_update_spawns_detached_powershell(monkeypatch, tmp_path):
     # on Linux they're 0 (falsy) and the assertion below stays truthful.
     if sys.platform == 'win32':
         flags = kwargs['creationflags']
-        assert flags & _sp.DETACHED_PROCESS
+        # CREATE_NO_WINDOW hides the console flash, CREATE_NEW_PROCESS_GROUP
+        # isolates the child from SIGBREAK. DETACHED_PROCESS is NOT set
+        # on purpose — see the note in updater.apply_update for the
+        # v3.4.3 diagnosis (it kills PS1 on GUI subsystem parents).
         assert flags & _sp.CREATE_NO_WINDOW
         assert flags & _sp.CREATE_NEW_PROCESS_GROUP
+        assert not (flags & _sp.DETACHED_PROCESS), (
+            'DETACHED_PROCESS must not be set — PyInstaller --windowed parents '
+            'have no console and Windows kills PS1 trying to detach from it')
 
     # sys.exit must be called at the end.
     assert exit_calls == [0]

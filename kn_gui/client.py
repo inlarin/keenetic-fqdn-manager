@@ -274,75 +274,16 @@ class KeeneticClient:
 
     # ── SSTP interface provisioning ───────────────────────────────────────
     def find_free_sstp_index(self, existing: list[str]) -> int:
-        """Return the next unused N for SSTP<N>, starting at 1."""
-        taken: set[int] = set()
-        for name in existing:
-            m = re.match(r'SSTP(\d+)$', name)
-            if m:
-                taken.add(int(m.group(1)))
-        n = 1
-        while n in taken:
-            n += 1
-        return n
+        from . import _sstp_ops
+        return _sstp_ops.find_free_sstp_index(existing)
 
     def create_sstp_interface(self, name: str, peer: str, user: str,
                                password: str, description: str = '',
                                auto_connect: bool = True) -> list[str]:
-        """Provision a fresh SSTP VPN-client interface. Idempotent: if a
-        slot with the same name already exists, its peer/auth/flags get
-        reset so we don't inherit stale params.
-
-        The `description` is prefixed with MANAGED_INTERFACE_TAG so the
-        app can later recognise which interfaces it owns (for the "Delete
-        managed VPN" action), and `ip global` is set so the router will
-        actually use this interface for policy routing — without it the
-        interface exists but dns-proxy rules pointing at it silently
-        do nothing.
-        """
-        from .constants import (MANAGED_INTERFACE_TAG,
-                                 MANAGED_VPN_IP_GLOBAL_PRIORITY)
-
-        errs: list[str] = []
-
-        def try_(cmd: str, critical: bool = False):
-            try:
-                self.run_expect(cmd)
-            except RuntimeError as e:
-                if critical:
-                    errs.append(str(e))
-                # Non-critical commands (`no ...` resets) can fail when the
-                # field wasn't set in the first place; that's OK.
-
-        tagged = (f'{MANAGED_INTERFACE_TAG} {description}'.strip()
-                  if description else MANAGED_INTERFACE_TAG)
-
-        try:
-            self.run_expect(f'interface {name}')
-            # Reset any prior state so re-creation doesn't inherit stale values
-            try_('no peer')
-            try_('no authentication identity')
-            try_('no authentication password')
-            try_('no description')
-            safe_desc = _sanitize_cli_value(tagged).replace('"', '').strip()
-            if safe_desc:
-                try_(f'description "{safe_desc}"', critical=True)
-            try_(f'peer {_sanitize_cli_value(peer)}',                           critical=True)
-            try_(f'authentication identity {_sanitize_cli_value(user)}',        critical=True)
-            try_(f'authentication password {_sanitize_cli_value(password)}',    critical=True)
-            try_('no ccp')
-            try_('ip mtu 1400')
-            try_('ip tcp adjust-mss pmtu')
-            try_('security-level public')
-            try_('ipcp default-route')
-            try_('ipcp dns-routes')
-            try_('ipcp address')
-            try_(f'ip global {MANAGED_VPN_IP_GLOBAL_PRIORITY}')
-            if auto_connect:
-                try_('connect')
-                try_('up')
-        finally:
-            self.run('exit')
-        return errs
+        from . import _sstp_ops
+        return _sstp_ops.create_sstp_interface(
+            name, peer, user, password, description, auto_connect,
+            run_expect=self.run_expect, run=self.run)
 
     def delete_interface(self, name: str) -> None:
         self.run(f'no interface {name}')

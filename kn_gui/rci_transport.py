@@ -260,71 +260,21 @@ class KeeneticRCIClient:
         return _fqdn_group_ops.list_managed_fqdn_groups(self.running_config)
 
     # ── SSTP interface provisioning ───────────────────────────────────────
+    # Both methods delegate to kn_gui._sstp_ops so there's one place to
+    # evolve the description-tagging / ip-global / auth flow. Parallel
+    # to the _fqdn_group_ops split that happened in v3.4.1.
 
     def find_free_sstp_index(self, existing: list[str]) -> int:
-        taken: set[int] = set()
-        for name in existing:
-            m = re.match(r'SSTP(\d+)$', name)
-            if m:
-                taken.add(int(m.group(1)))
-        n = 1
-        while n in taken:
-            n += 1
-        return n
+        from . import _sstp_ops
+        return _sstp_ops.find_free_sstp_index(existing)
 
     def create_sstp_interface(self, name: str, peer: str, user: str,
                                password: str, description: str = '',
                                auto_connect: bool = True) -> list[str]:
-        from .constants import (MANAGED_INTERFACE_TAG,
-                                 MANAGED_VPN_IP_GLOBAL_PRIORITY)
-
-        errs: list[str] = []
-
-        def try_(cmd: str, critical: bool = False):
-            try:
-                self.run_expect(cmd)
-            except RuntimeError as e:
-                if critical:
-                    errs.append(str(e))
-
-        # Prefix every managed interface description with a short tag so
-        # we can tell apart interfaces we created from user-made ones.
-        if description:
-            tagged = f'{MANAGED_INTERFACE_TAG} {description}'.strip()
-        else:
-            tagged = MANAGED_INTERFACE_TAG
-
-        try:
-            self.run_expect(f'interface {name}')
-            try_('no peer')
-            try_('no authentication identity')
-            try_('no authentication password')
-            try_('no description')
-            safe_desc = _sanitize_cli_value(tagged).replace('"', '').strip()
-            if safe_desc:
-                try_(f'description "{safe_desc}"', critical=True)
-            try_(f'peer {_sanitize_cli_value(peer)}', critical=True)
-            try_(f'authentication identity {_sanitize_cli_value(user)}', critical=True)
-            try_(f'authentication password {_sanitize_cli_value(password)}', critical=True)
-            try_('no ccp')
-            try_('ip mtu 1400')
-            try_('ip tcp adjust-mss pmtu')
-            try_('security-level public')
-            try_('ipcp default-route')
-            try_('ipcp dns-routes')
-            try_('ipcp address')
-            # `ip global <N>` — Keenetic web-UI calls this checkbox
-            # "Использовать для выхода в интернет". Without it the
-            # interface exists but is not eligible for policy routing,
-            # so dns-proxy rules pointing at this interface silently do
-            # nothing. That was the "ничего не работает" symptom.
-            try_(f'ip global {MANAGED_VPN_IP_GLOBAL_PRIORITY}')
-            if auto_connect:
-                try_('connect')
-                try_('up')
-        finally:
-            self.run('exit')
-        return errs
+        from . import _sstp_ops
+        return _sstp_ops.create_sstp_interface(
+            name, peer, user, password, description, auto_connect,
+            run_expect=self.run_expect, run=self.run)
 
     def delete_interface(self, name: str) -> None:
         self.run(f'no interface {name}')

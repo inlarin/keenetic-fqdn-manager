@@ -340,6 +340,171 @@ _PS_APPLY_RETRIES = 40
 _PS_INITIAL_WAIT = 5    # seconds to wait for the Python process to exit
 _PS_RETRY_WAIT = 2      # seconds between retry attempts
 
+# Minimum size of a legitimate release .exe. Anything smaller means the
+# download was truncated or AV replaced it with a stub; PS1 refuses to
+# install.
+_MIN_EXE_BYTES = 1_048_576  # 1 MB
+
+
+def _ps_quote(path: str) -> str:
+    """Safely embed a string into a PowerShell single-quoted literal.
+
+    Single-quoted PS strings don't interpolate and only the single-quote
+    itself needs doubling — strictly safer than double-quoted strings
+    with backtick escapes.
+    """
+    return "'" + path.replace("'", "''") + "'"
+
+
+def _build_ps_script(*, current_exe: str, new_exe_path: str,
+                      log_path: str, status_path: str,
+                      retries: int = _PS_APPLY_RETRIES,
+                      initial_wait: int = _PS_INITIAL_WAIT,
+                      retry_wait: int = _PS_RETRY_WAIT,
+                      min_bytes: int = _MIN_EXE_BYTES,
+                      launch_process: bool = True) -> str:
+    """Build the self-update PowerShell script as text.
+
+    Extracted from ``apply_update`` so the integration tests can drive
+    it against fake files and verify all four code paths (happy +
+    VANISHED + TRUNCATED + ROLLED_BACK) without having to actually
+    restart a frozen .exe.
+
+    The ``launch_process`` flag controls whether ``Start-Process $cur``
+    is emitted; integration tests use ``launch_process=False`` so they
+    can work with placeholder files that aren't valid Win32 executables.
+    The production call site always leaves it True.
+
+    The PS1 performs:
+      1. Verify $new really exists and is >= min_bytes. Windows Defender
+         occasionally quarantines freshly-downloaded exes between the
+         Python-side "file exists" check and the moment PS1 starts.
+      2. Rename $cur → $bak. Rename of a running exe is always allowed
+         on NTFS. If this fails, $new is never touched.
+      3. Move (not copy) $new → $cur. Move is atomic on same NTFS volume.
+      4. Launch the new exe (unless launch_process=False).
+      5. If any of 2..4 fail across all retries, rollback and WRITE a
+         status file so the next-run App warns the user.
+    """
+    launch_block = (
+        'Start-Process -FilePath $cur -WorkingDirectory (Split-Path $cur) -ErrorAction Stop\n            Start-Sleep -Seconds 1'
+        if launch_process else
+        '# (launch suppressed for integration test)'
+    )
+    rollback_launch = (
+        'Start-Process -FilePath $cur -WorkingDirectory (Split-Path $cur)'
+        if launch_process else
+        '# (launch suppressed for integration test)'
+    )
+
+    return f"""\
+$ErrorActionPreference = 'Continue'
+$log     = {_ps_quote(log_path)}
+$status  = {_ps_quote(status_path)}
+$cur     = {_ps_quote(current_exe)}
+$new     = {_ps_quote(new_exe_path)}
+$bak     = $cur + '.bak'
+$bakName = [System.IO.Path]::GetFileName($bak)
+$ok      = $false
+$lastErr = ''
+
+function Say($msg) {{
+    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    Add-Content -Path $log -Value "[$ts] $msg" -Encoding UTF8 -ErrorAction SilentlyContinue
+}}
+
+function WriteStatus($kind, $reason) {{
+    # Overwrite any stale status; Python reads + deletes this on next run.
+    Set-Content -Path $status -Value "$kind`n$reason`n$new" -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+}}
+
+Say "apply_update started (retries={retries}, initial_wait={initial_wait}s)"
+Say "cur = $cur"
+Say "new = $new"
+Say "bak = $bak"
+
+# Pre-flight: make sure the downloaded file is really there and non-empty.
+# $preflightFailed stops the rollback branch below from overwriting the
+# more specific VANISHED / TRUNCATED status with a generic ROLLED_BACK.
+Start-Sleep -Seconds {initial_wait}
+$preflightFailed = $false
+if (-not (Test-Path $new)) {{
+    $lastErr = "downloaded file disappeared before update (likely AV): $new"
+    Say $lastErr
+    WriteStatus 'VANISHED' $lastErr
+    $preflightFailed = $true
+}} elseif ((Get-Item $new).Length -lt {min_bytes}) {{
+    # Under {min_bytes} bytes means download was truncated or AV replaced it.
+    $lastErr = "downloaded file looks truncated: $((Get-Item $new).Length) bytes"
+    Say $lastErr
+    WriteStatus 'TRUNCATED' $lastErr
+    $preflightFailed = $true
+}} else {{
+    for ($i = 0; $i -lt {retries}; $i++) {{
+        try {{
+            if (Test-Path $bak) {{
+                Remove-Item $bak -Force -ErrorAction SilentlyContinue
+            }}
+            Say "attempt $($i+1)/{retries}: rename current -> $bakName"
+            Rename-Item -Path $cur -NewName $bakName -Force -ErrorAction Stop
+            Say "move $new -> $cur"
+            # Move-Item is atomic on the same volume — either succeeds fully
+            # or fails fully. No half-copied exe.
+            Move-Item -Path $new -Destination $cur -Force -ErrorAction Stop
+            # Sanity: size must match what we just moved.
+            $sz = (Get-Item $cur).Length
+            if ($sz -lt {min_bytes}) {{
+                throw "size after move looks wrong: $sz bytes"
+            }}
+            Say "launching $cur ($sz bytes)"
+            {launch_block}
+            Remove-Item $bak -Force -ErrorAction SilentlyContinue
+            $ok = $true
+            Say "SUCCESS"
+            break
+        }} catch {{
+            $lastErr = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+            Say "attempt $($i+1) failed: $lastErr"
+            # If we managed to rename but not move/launch, undo rename for
+            # the next retry so subsequent iterations start from a clean state.
+            if ((Test-Path $bak) -and (-not (Test-Path $cur))) {{
+                try {{ Rename-Item -Path $bak -NewName ([System.IO.Path]::GetFileName($cur)) -ErrorAction SilentlyContinue }} catch {{}}
+            }}
+            Start-Sleep -Seconds {retry_wait}
+        }}
+    }}
+}}
+
+if ((-not $ok) -and (-not $preflightFailed)) {{
+    Say "all retries exhausted, attempting rollback"
+    # Write status first so even a crashed rollback leaves evidence.
+    # Only overwrite status when we actually entered the retry loop —
+    # otherwise the more specific VANISHED/TRUNCATED wins.
+    WriteStatus 'ROLLED_BACK' $lastErr
+    if ((Test-Path $bak) -and (-not (Test-Path $cur))) {{
+        try {{
+            Rename-Item -Path $bak -NewName ([System.IO.Path]::GetFileName($cur)) -ErrorAction Stop
+            Say "rollback OK — launching old version"
+            {rollback_launch}
+        }} catch {{
+            Say "rollback failed: $($_.Exception.Message)"
+            WriteStatus 'ROLLBACK_FAILED' "$lastErr | rollback: $($_.Exception.Message)"
+        }}
+    }} elseif (Test-Path $cur) {{
+        # Current exe is still in place (rename didn't happen or was undone).
+        Say "current exe still present — launching it"
+        try {{
+            {rollback_launch}
+        }} catch {{
+            Say "couldn't launch current: $($_.Exception.Message)"
+        }}
+    }}
+    # Keep $new on disk so the user can retry manually.
+}}
+Say "script done (ok=$ok)"
+Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
+"""
+
 
 def apply_update(new_exe_path: str) -> None:
     """Replace the running exe with *new_exe_path* and restart.
@@ -375,132 +540,14 @@ def apply_update(new_exe_path: str) -> None:
         LOGGER.error('apply_update: new exe not found at %s', new_exe_path)
         return
 
-    # PowerShell string-literal escaping. `_ps()` wraps in '...' (single
-    # quotes) because single-quoted PS strings allow no interpolation and
-    # the only character that needs doubling is the single-quote itself.
-    # This is strictly safer than double-quotes + backtick escapes.
-    def _ps(path: str) -> str:
-        return "'" + path.replace("'", "''") + "'"
-
     log_path = os.path.join(tempfile.gettempdir(), UPDATE_LOG_NAME)
     status_path = os.path.join(tempfile.gettempdir(), UPDATE_STATUS_NAME)
-
-    # The PS1 performs (roughly):
-    #   1. Verify the downloaded exe really exists and has non-trivial size —
-    #      catches the case where AV removed it between download and restart.
-    #   2. Rename running exe → .bak.  Rename of a running exe is always
-    #      allowed on NTFS.  If this fails the new exe is never touched.
-    #   3. Move (not copy) new → current name.  Move is atomic on NTFS when
-    #      source and dest are on the same volume — no half-written file.
-    #   4. Launch the new exe.  If it starts, we're done.
-    #   5. If any of 2..4 failed across all retries, rollback → launch old,
-    #      AND write a status file so the next-run App warns the user.
-    #      Without that, the user sees the old version popping back up and
-    #      can't tell why the update didn't stick.
-    ps_script = f"""\
-$ErrorActionPreference = 'Continue'
-$log     = {_ps(log_path)}
-$status  = {_ps(status_path)}
-$cur     = {_ps(current_exe)}
-$new     = {_ps(new_exe_path)}
-$bak     = $cur + '.bak'
-$bakName = [System.IO.Path]::GetFileName($bak)
-$ok      = $false
-$lastErr = ''
-
-function Say($msg) {{
-    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-    Add-Content -Path $log -Value "[$ts] $msg" -Encoding UTF8 -ErrorAction SilentlyContinue
-}}
-
-function WriteStatus($kind, $reason) {{
-    # Overwrite any stale status; Python reads + deletes this on next run.
-    Set-Content -Path $status -Value "$kind`n$reason`n$new" -Encoding UTF8 -Force -ErrorAction SilentlyContinue
-}}
-
-Say "apply_update started (retries={_PS_APPLY_RETRIES}, initial_wait={_PS_INITIAL_WAIT}s)"
-Say "cur = $cur"
-Say "new = $new"
-Say "bak = $bak"
-
-# Pre-flight: make sure the downloaded file is really there and non-empty.
-# Windows Defender sometimes quarantines freshly-downloaded exes between
-# the Python-side "file exists" check and the moment PS1 starts running.
-Start-Sleep -Seconds {_PS_INITIAL_WAIT}
-if (-not (Test-Path $new)) {{
-    $lastErr = "downloaded file disappeared before update (likely AV): $new"
-    Say $lastErr
-    WriteStatus 'VANISHED' $lastErr
-}} elseif ((Get-Item $new).Length -lt 1048576) {{
-    # Any real release is > 10 MB; under 1 MB means download was truncated
-    # or AV replaced the file with a stub.
-    $lastErr = "downloaded file looks truncated: $((Get-Item $new).Length) bytes"
-    Say $lastErr
-    WriteStatus 'TRUNCATED' $lastErr
-}} else {{
-    for ($i = 0; $i -lt {_PS_APPLY_RETRIES}; $i++) {{
-        try {{
-            if (Test-Path $bak) {{
-                Remove-Item $bak -Force -ErrorAction SilentlyContinue
-            }}
-            Say "attempt $($i+1)/{_PS_APPLY_RETRIES}: rename current -> $bakName"
-            Rename-Item -Path $cur -NewName $bakName -Force -ErrorAction Stop
-            Say "move $new -> $cur"
-            # Move-Item is atomic on the same volume — either succeeds fully
-            # or fails fully. No half-copied exe.
-            Move-Item -Path $new -Destination $cur -Force -ErrorAction Stop
-            # Sanity: size must match what we just moved.
-            $sz = (Get-Item $cur).Length
-            if ($sz -lt 1048576) {{
-                throw "size after move looks wrong: $sz bytes"
-            }}
-            Say "launching $cur ($sz bytes)"
-            Start-Process -FilePath $cur -WorkingDirectory (Split-Path $cur) -ErrorAction Stop
-            Start-Sleep -Seconds 1
-            Remove-Item $bak -Force -ErrorAction SilentlyContinue
-            $ok = $true
-            Say "SUCCESS"
-            break
-        }} catch {{
-            $lastErr = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
-            Say "attempt $($i+1) failed: $lastErr"
-            # If we managed to rename but not move/launch, undo rename for
-            # the next retry so subsequent iterations start from a clean state.
-            if ((Test-Path $bak) -and (-not (Test-Path $cur))) {{
-                try {{ Rename-Item -Path $bak -NewName ([System.IO.Path]::GetFileName($cur)) -ErrorAction SilentlyContinue }} catch {{}}
-            }}
-            Start-Sleep -Seconds {_PS_RETRY_WAIT}
-        }}
-    }}
-}}
-
-if (-not $ok) {{
-    Say "all retries exhausted, attempting rollback"
-    # Write status first so even a crashed rollback leaves evidence.
-    WriteStatus 'ROLLED_BACK' $lastErr
-    if ((Test-Path $bak) -and (-not (Test-Path $cur))) {{
-        try {{
-            Rename-Item -Path $bak -NewName ([System.IO.Path]::GetFileName($cur)) -ErrorAction Stop
-            Say "rollback OK — launching old version"
-            Start-Process -FilePath $cur -WorkingDirectory (Split-Path $cur)
-        }} catch {{
-            Say "rollback failed: $($_.Exception.Message)"
-            WriteStatus 'ROLLBACK_FAILED' "$lastErr | rollback: $($_.Exception.Message)"
-        }}
-    }} elseif (Test-Path $cur) {{
-        # Current exe is still in place (rename didn't happen or was undone).
-        Say "current exe still present — launching it"
-        try {{
-            Start-Process -FilePath $cur -WorkingDirectory (Split-Path $cur)
-        }} catch {{
-            Say "couldn't launch current: $($_.Exception.Message)"
-        }}
-    }}
-    # Keep $new on disk so the user can retry manually.
-}}
-Say "script done (ok=$ok)"
-Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
-"""
+    ps_script = _build_ps_script(
+        current_exe=current_exe,
+        new_exe_path=new_exe_path,
+        log_path=log_path,
+        status_path=status_path,
+    )
 
     # mkstemp → path the caller cannot predict. Other processes cannot
     # race to replace our script before PowerShell reads it.
@@ -617,7 +664,12 @@ def pop_update_status() -> Optional[dict]:
     if not os.path.exists(status_path):
         return None
     try:
-        with open(status_path, 'r', encoding='utf-8') as f:
+        # PS1 writes the status file as UTF-8 with BOM (Add-Content
+        # -Encoding UTF8 does so on PowerShell 5.1). utf-8-sig strips the
+        # BOM transparently; plain 'utf-8' would leave \ufeff on the first
+        # line and the 'kind' check below would silently drop every
+        # status message.
+        with open(status_path, 'r', encoding='utf-8-sig') as f:
             body = f.read()
     except OSError:
         return None

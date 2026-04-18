@@ -100,6 +100,11 @@ class App(tk.Tk):
         # Route WARNING+ messages from rci_client to the UI log.
         self._rci_log_handler = _UiLogHandler(self)
         logging.getLogger('kn_gui.rci_client').addHandler(self._rci_log_handler)
+        # Visible version tag on first line of the log: makes it obvious
+        # which version is actually running (useful both for support
+        # tickets and for confirming that an auto-update actually swapped
+        # the binary).
+        self.log(f'{APP_NAME} v{APP_VERSION} — готов к работе', 'info')
         # If the previous run attempted to update but the restart was
         # rolled back (AV lock, AppLocker, truncated download, …), the
         # PS1 left a status file. Surface it before the normal update

@@ -95,6 +95,7 @@ def test_parse_standalone_ip_route_with_reject():
     assert st['ip_routes'] == [{
         'network': '91.108.4.0', 'mask': '255.255.252.0',
         'interface': 'SSTP0', 'auto': True, 'reject': True,
+        'system_managed': False,
     }]
 
 
@@ -103,6 +104,35 @@ def test_parse_ip_route_without_flags():
     st = parse_running_config(cfg)
     assert st['ip_routes'][0]['auto'] is False
     assert st['ip_routes'][0]['reject'] is False
+    assert st['ip_routes'][0]['system_managed'] is False
+
+
+def test_parse_ip_route_default_opkgtun_is_system_managed():
+    """`ip route default <gw> OpkgTunN` is the seed NDM uses to populate
+    every per-group fwmark routing table for FQDN groups bound to that
+    OpkgTun. The GUI must mark these so the Delete button can refuse to
+    remove them — deleting silently blackholes selective routing for
+    every dns-proxy binding to that OpkgTun."""
+    cfg = (
+        'ip route default 172.19.0.1 OpkgTun0\n'
+        'ip route default 172.19.4.1 OpkgTun4\n'
+        'ip route 91.108.4.0 255.255.252.0 SSTP0 auto reject\n'
+    )
+    st = parse_running_config(cfg)
+    assert len(st['ip_routes']) == 3
+    assert st['ip_routes'][0]['system_managed'] is True   # OpkgTun0
+    assert st['ip_routes'][1]['system_managed'] is True   # OpkgTun4
+    # Non-OpkgTun routes (even default-targeting) stay deletable.
+    assert st['ip_routes'][2]['system_managed'] is False  # SSTP0
+
+
+def test_parse_ip_route_default_non_opkgtun_not_protected():
+    """A `default` route via SSTP/Wireguard etc. is regular user config,
+    not part of the OpkgTun-fwmark-table propagation mechanism. Don't
+    protect it."""
+    cfg = 'ip route default 10.0.0.1 SSTP0 auto\n'
+    st = parse_running_config(cfg)
+    assert st['ip_routes'][0]['system_managed'] is False
 
 
 def test_parse_dns_proxy_block_isolated():

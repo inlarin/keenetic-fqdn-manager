@@ -721,6 +721,19 @@ class App(tk.Tk):
         elif iid.startswith(IID_IPROUTE):
             idx = int(iid.split('::', 1)[1])
             r = self.state['ip_routes'][idx]
+            if r.get('system_managed'):
+                # `ip route default <gw> OpkgTunN` is the seed NDM uses to
+                # populate every per-group fwmark routing table bound to that
+                # OpkgTun. Deleting it silently blackholes all selective-
+                # routing traffic for that pool until something repopulates
+                # the entry (typically a sub-refresh cron). Refuse the delete.
+                messagebox.showwarning(APP_NAME,
+                    f'Маршрут {r["network"]}/{r["mask"]} via {r["interface"]}\n'
+                    f'управляется системой и нужен для работы FQDN-роутинга в этот\n'
+                    f'OpkgTun-интерфейс. Удалять его нельзя — без него selective\n'
+                    f'routing для всех привязанных к {r["interface"]} групп\n'
+                    f'перестанет работать.')
+                return
             if not messagebox.askyesno(APP_NAME,
                     f'Delete IP route {r["network"]}/{r["mask"]} via {r["interface"]}?'):
                 return

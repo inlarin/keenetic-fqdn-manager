@@ -87,9 +87,16 @@ def refresh(app) -> None:
             flags.append('auto')
         if r.get('reject'):
             flags.append('kill switch')
+        if r.get('system_managed'):
+            flags.append('system')
         tag = ('exclusive',) if r.get('reject') else ('unprotected',)
+        # System-managed routes (e.g. `ip route default 172.19.X.1 OpkgTunN`)
+        # get a 🔒 prefix so the user knows the Delete button will refuse
+        # to remove them. Removing them silently blackholes selective-
+        # routing traffic; see _on_delete_selected for the guard.
+        lock = '🔒 ' if r.get('system_managed') else ''
         app.state_tree.insert(r_root, 'end', iid=f'{IID_IPROUTE}{i}',
-                                text=f'      {r["network"]}/{r["mask"]}',
+                                text=f'      {lock}{r["network"]}/{r["mask"]}',
                                 values=(f'→ {r["interface"]}  [{", ".join(flags) if flags else "—"}]',),
                                 tags=tag)
 

@@ -86,9 +86,21 @@ def parse_running_config(cfg: str) -> dict:
         m = re.match(r'ip route (\S+) (\S+) (\S+)(?:\s+(auto))?(?:\s+(reject))?',
                      stripped)
         if m:
-            ip_routes.append({'network': m.group(1), 'mask': m.group(2),
-                              'interface': m.group(3), 'auto': m.group(4) == 'auto',
-                              'reject': m.group(5) == 'reject'})
+            net, mask, iface = m.group(1), m.group(2), m.group(3)
+            # `ip route default <gw> OpkgTun<N>` is a system-managed entry:
+            # NDM propagates it into every per-group fwmark routing table for
+            # FQDN groups bound to that OpkgTun, so deleting it silently
+            # blackholes all selective-routing traffic for that pool. Mark it
+            # so the GUI can refuse to delete it. The pattern is broader than
+            # OpkgTun (anything bound to a `*Tun*`-style upstream interface
+            # that needs a default-route propagation), but conservative — only
+            # whitelist OpkgTun for now since that's the verified case.
+            system_managed = (net == 'default'
+                              and iface.startswith('OpkgTun'))
+            ip_routes.append({'network': net, 'mask': mask,
+                              'interface': iface, 'auto': m.group(4) == 'auto',
+                              'reject': m.group(5) == 'reject',
+                              'system_managed': system_managed})
     return {
         'groups': groups,
         'group_descriptions': group_descriptions,

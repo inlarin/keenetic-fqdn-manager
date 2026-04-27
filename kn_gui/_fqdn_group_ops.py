@@ -5,6 +5,7 @@ KeeneticRCIClient`) transports expose the same FQDN-group API:
 
     create_fqdn_group(name, entries, description='') -> (created, errs)
     delete_fqdn_group(name)
+    bulk_delete_fqdn_groups(names, …)
     list_managed_fqdn_groups() -> list[dict]
 
 Until v3.4.0 each transport carried its own ~70-line copy of these.
@@ -20,7 +21,8 @@ retry, etc.) only has to touch one file.
 """
 from __future__ import annotations
 
-from typing import Callable
+import re
+from typing import Callable, Iterable, Optional
 
 from .constants import MANAGED_INTERFACE_TAG
 from .utils import (MAX_ENTRIES_PER_GROUP,
@@ -118,17 +120,72 @@ def create_fqdn_group(name: str, entries: list[str],
     return created, errs
 
 
+_GROUP_DECL_RE  = re.compile(r'^object-group fqdn\s+(\S+)\s*$')
+_ROUTE_DECL_RE  = re.compile(r'^\s+route object-group\s+(\S+)\s+')
+
+
+def _parse_existing_groups_and_routes(running_config: str
+                                       ) -> tuple[set[str], set[str]]:
+    """Scan a `show running-config` dump and return:
+        (set of object-group fqdn names, set of names that have a
+         dns-proxy route binding).
+    Both sets are used to skip `no …` commands for entities that
+    aren't on the router — the dominant cost of bulk delete."""
+    groups: set[str] = set()
+    routes: set[str] = set()
+    for line in running_config.splitlines():
+        m = _GROUP_DECL_RE.match(line)
+        if m:
+            groups.add(m.group(1))
+            continue
+        m = _ROUTE_DECL_RE.match(line)
+        if m:
+            routes.add(m.group(1))
+    return groups, routes
+
+
 def delete_fqdn_group(name: str,
-                       run: Callable[..., tuple[str, bool]]) -> None:
+                       run: Callable[..., tuple[str, bool]],
+                       existing_groups: Optional[set[str]] = None,
+                       existing_routes: Optional[set[str]] = None) -> None:
     """Delete the group + its dns-proxy route + any auto-split siblings
     (`_2`..`_50`). Covers groups up to ~15k entries — well past realistic
-    service catalogs."""
-    run(f'no dns-proxy route object-group {name}')
-    run(f'no object-group fqdn {name}')
-    for i in range(2, 51):
-        sib = f'{name}_{i}'
-        run(f'no dns-proxy route object-group {sib}')
-        run(f'no object-group fqdn {sib}')
+    service catalogs.
+
+    When ``existing_groups`` / ``existing_routes`` are provided (e.g. by
+    :func:`bulk_delete_fqdn_groups`), `no …` commands for entities that
+    don't exist are skipped — this turns a 100-command-per-name blind
+    sweep into ~2 commands for typical (single-chunk) groups, making
+    bulk delete ~50× faster on a router with 30+ groups."""
+    candidates = [name] + [f'{name}_{i}' for i in range(2, 51)]
+    for sib in candidates:
+        if existing_routes is None or sib in existing_routes:
+            run(f'no dns-proxy route object-group {sib}')
+        if existing_groups is None or sib in existing_groups:
+            run(f'no object-group fqdn {sib}')
+
+
+def bulk_delete_fqdn_groups(names: Iterable[str],
+                              run: Callable[..., tuple[str, bool]],
+                              running_config_fn: Callable[[], str]) -> None:
+    """Delete many groups efficiently — fetches `show running-config` once
+    and uses the result to drop the blind ``_2``..``_50`` sibling sweep
+    that :func:`delete_fqdn_group` does for each name when called solo.
+
+    Without this helper, a delete of 30 user groups fires 100 commands
+    per name = 3000 commands total (≈ 5–15 minutes over RCI when NDM
+    is busy). With it: 1 fetch + 2 commands × 30 names ≈ 60 commands
+    plus one big read.
+
+    Routes are removed BEFORE the groups they bind to — the reverse
+    triggers ``Network::ObjectGroup error: in use`` on the route table.
+    """
+    cfg = running_config_fn() or ''
+    groups, routes = _parse_existing_groups_and_routes(cfg)
+    for name in names:
+        delete_fqdn_group(name, run,
+                            existing_groups=groups,
+                            existing_routes=routes)
 
 
 def list_managed_fqdn_groups(running_config_fn: Callable[[], str]) -> list[dict]:

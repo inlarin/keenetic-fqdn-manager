@@ -1023,17 +1023,18 @@ class App(tk.Tk):
             def remove():
                 removed: list[str] = []
                 errors: list[tuple[str, str]] = []
-                for g in managed:
-                    name = g.get('name', '')
-                    if not name:
-                        continue
-                    try:
-                        # delete_fqdn_group also cleans up split-siblings
-                        # (name_2 … name_50) and the dns-proxy route.
-                        client.delete_fqdn_group(name)
-                        removed.append(name)
-                    except Exception as e:  # noqa: BLE001
-                        errors.append((name, str(e)))
+                names = [g.get('name', '') for g in managed if g.get('name')]
+                # One bulk pass: fetches running-config once and skips
+                # `no …` commands for entities that don't exist. Without
+                # this, each name would fire 100 blind commands (group +
+                # route + 49 split-sibling pairs) — most of which time
+                # out / no-op when there are no siblings. Total command
+                # count drops from ~100·N to ~2·N for the typical case.
+                try:
+                    client.bulk_delete_fqdn_groups(names)
+                    removed = list(names)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(('bulk_delete', str(e)))
                 try:
                     client.save_config()
                 except Exception as e:  # noqa: BLE001
@@ -1588,6 +1589,20 @@ class App(tk.Tk):
         def do_apply():
             c = self.client
             assert c is not None
+            # Phase 1: bulk-delete every group we're about to (re)create.
+            # `delete_fqdn_group` per-name does a 100-cmd blind sweep for
+            # split-siblings; calling it in a loop for N services makes
+            # apply painfully slow on routers with many groups already.
+            # `bulk_delete_fqdn_groups` does ONE running-config fetch and
+            # only emits `no …` for entities that exist.
+            pre_delete = [e['svc']['id'] for e in to_do
+                          if GROUP_NAME_RE.match(e['svc']['id'])]
+            if pre_delete:
+                try:
+                    c.bulk_delete_fqdn_groups(pre_delete)
+                except Exception as e:  # noqa: BLE001
+                    self.ui_queue.put(('log', ('warn',
+                        f'предварительная очистка группа: {e}')))
             total_inc = touched = migrated = 0
             for entry in to_do:
                 svc = entry['svc']
@@ -1597,7 +1612,6 @@ class App(tk.Tk):
                         f'SKIP {svc["name"]}: invalid group id "{group}"')))
                     continue
                 includes = list(svc.get('fqdn', [])) + list(svc.get('ipv4_cidr', []))
-                c.delete_fqdn_group(group)
                 created_names, errs = c.create_fqdn_group(
                     group, includes, description=svc.get('name', ''))
                 for e in errs:

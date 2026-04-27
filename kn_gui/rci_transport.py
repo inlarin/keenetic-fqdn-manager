@@ -254,6 +254,14 @@ class KeeneticRCIClient:
         from . import _fqdn_group_ops
         _fqdn_group_ops.delete_fqdn_group(name, run=self.run)
 
+    def bulk_delete_fqdn_groups(self, names) -> None:
+        """Delete multiple groups efficiently — one running-config fetch
+        instead of a 100-cmd-per-name blind sweep. See
+        :func:`_fqdn_group_ops.bulk_delete_fqdn_groups`."""
+        from . import _fqdn_group_ops
+        _fqdn_group_ops.bulk_delete_fqdn_groups(
+            names, run=self.run, running_config_fn=self.running_config)
+
     def add_ip_route(self, network: str, mask: str, interface: str,
                      auto: bool = True, reject: bool = False) -> str:
         parts = [f'ip route {network} {mask} {interface}']

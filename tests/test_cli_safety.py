@@ -74,8 +74,10 @@ interface-name: PPPoE0
     link: up
 '''
     result = parse_interfaces_text(text)
-    # Only PPPoE is in IFACE_TYPES; Loopback and Bridge are filtered out.
-    assert [i['name'] for i in result] == ['PPPoE0']
+    # Loopback is filtered out. Bridge IS allowed (NDM-managed bridge
+    # wrappers like Bridge2 — used to plumb Entware-side SoftEther TAP
+    # into dns-proxy — must appear in the dropdown).
+    assert [i['name'] for i in result] == ['Bridge0', 'PPPoE0']
 
 
 def test_parse_interfaces_empty():

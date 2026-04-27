@@ -26,6 +26,7 @@ from typing import Callable, Optional
 
 from .cache import CACHE
 from .catalog import Catalog
+from .cli_safety import iface_display, iface_name_from_display
 from .client import KeeneticClient
 from .rci_client import RCIClient
 from .rci_transport import KeeneticRCIClient
@@ -340,8 +341,12 @@ class App(tk.Tk):
         ttk.Label(wrap, text='Интерфейс:').grid(row=1, column=2, sticky='e',
                                                  padx=(8, 4), pady=(4, 0))
         self.iface_var = tk.StringVar()
+        # Combobox values are formatted as "Name — description" so the user
+        # can disambiguate e.g. Bridge2 ("SoftEther vpn_dallas") from
+        # Bridge0 ("Home network"). Use ``_iface_name()`` to extract the
+        # bare interface name when issuing CLI commands.
         self.iface_combo = ttk.Combobox(wrap, textvariable=self.iface_var,
-                                         state='disabled', width=22)
+                                         state='disabled', width=44)
         self.iface_combo.grid(row=1, column=3, columnspan=2, sticky='w', pady=(4, 0))
 
         self.info_var = tk.StringVar(value='')
@@ -867,10 +872,11 @@ class App(tk.Tk):
                 return
             nm, ifaces, errs = result
             self.interfaces = ifaces
-            names = [i['name'] for i in ifaces]
-            self.iface_combo.configure(values=names, state='readonly')
-            if nm in names:
-                self.iface_var.set(nm)
+            displays = [iface_display(i) for i in ifaces]
+            self.iface_combo.configure(values=displays, state='readonly')
+            target = next((d for d, i in zip(displays, ifaces) if i.get('name') == nm), None)
+            if target:
+                self.iface_var.set(target)
             for e in errs:
                 self.log(f'  {nm}: {e}', 'warn')
             self.log(f'✓ Создан {nm}, выбран как текущий интерфейс.', 'ok')
@@ -950,12 +956,13 @@ class App(tk.Tk):
                     return
                 removed, errors, ifaces = res
                 self.interfaces = ifaces
-                names = [i['name'] for i in ifaces]
+                displays = [iface_display(i) for i in ifaces]
                 # Refresh the interface dropdown; keep selection if still valid.
-                self.iface_combo.configure(values=names,
-                                            state='readonly' if names else 'disabled')
-                if self.iface_var.get() not in names:
-                    self.iface_var.set(names[0] if names else '')
+                self.iface_combo.configure(values=displays,
+                                            state='readonly' if displays else 'disabled')
+                current_name = iface_name_from_display(self.iface_var.get())
+                if current_name not in [i.get('name') for i in ifaces]:
+                    self.iface_var.set(displays[0] if displays else '')
                 for n in removed:
                     self.log(f'  ✓ удалён {n}', 'ok')
                 for n, e in errors:
@@ -1403,19 +1410,21 @@ class App(tk.Tk):
                     'текущее состояние неизвестно (нажмите «Обновить» чтобы повторить).',
                     'warn',
                 )
-            names = [i['name'] for i in self.interfaces]
-            self.iface_combo.configure(values=names, state='readonly')
-            saved_iface = self.ui_cfg.get('last_interface', '')
-            if saved_iface in names:
-                self.iface_var.set(saved_iface)
+            displays = [iface_display(i) for i in self.interfaces]
+            self.iface_combo.configure(values=displays, state='readonly')
+            saved_iface = self.ui_cfg.get('last_interface', '')  # bare name
+            saved_display = next((d for d, i in zip(displays, self.interfaces)
+                                  if i.get('name') == saved_iface), None)
+            if saved_display:
+                self.iface_var.set(saved_display)
             else:
                 preferred = next((i for i in self.interfaces
                                   if i.get('type') in ('SSTP', 'Wireguard', 'OpenVPN', 'L2TP', 'PPTP')
                                   and i.get('connected') == 'yes'), None)
                 if preferred:
-                    self.iface_var.set(preferred['name'])
-                elif names:
-                    self.iface_var.set(names[0])
+                    self.iface_var.set(iface_display(preferred))
+                elif displays:
+                    self.iface_var.set(displays[0])
             v = self.client.router_info.get('version', '?')
             vendor = self.client.router_info.get('vendor', '')
             transport = self.client.router_info.get('_transport', '?')
@@ -1425,7 +1434,7 @@ class App(tk.Tk):
                 f'{len(self.state["groups"])} FQDN groups · '
                 f'{len(self.state["ip_routes"])} IP routes')
             self._set_state(ConnState.CONNECTED,
-                            f'{self.iface_var.get() or "нет интерфейса"}')
+                            f'{iface_name_from_display(self.iface_var.get()) or "нет интерфейса"}')
             self.log(f'Подключено. Интерфейс: {self.iface_var.get()}', 'ok')
             self._populate_services()
             self._refresh_state_view()
@@ -1472,7 +1481,7 @@ class App(tk.Tk):
                     'Создавать/использовать SSTP-интерфейсы не получится. '
                     'В веб-UI: Настройки системы → Компоненты → включить '
                     '«SSTP-клиент», применить, перезагрузить.')
-            iface_name = self.iface_var.get().strip()
+            iface_name = iface_name_from_display(self.iface_var.get())
             if iface_name:
                 st = next((i for i in self.interfaces if i.get('name') == iface_name), {})
                 connected = st.get('connected', '') == 'yes'
@@ -1531,7 +1540,7 @@ class App(tk.Tk):
     def _on_apply_services(self):
         if not self._ensure_connected():
             return
-        iface = self.iface_var.get().strip()
+        iface = iface_name_from_display(self.iface_var.get())
         if not iface:
             messagebox.showwarning(APP_NAME, 'Выберите интерфейс.')
             return
@@ -1792,7 +1801,7 @@ class App(tk.Tk):
     def _on_close(self):
         try:
             self.ui_cfg['geometry'] = self.geometry()
-            self.ui_cfg['last_interface'] = self.iface_var.get()
+            self.ui_cfg['last_interface'] = iface_name_from_display(self.iface_var.get())
             self.ui_cfg['exclusive'] = bool(self.exclusive_var.get())
             save_ui_config(self.ui_cfg)
         except Exception:

@@ -34,6 +34,30 @@ _FQDN_LABEL_RE = re.compile(r'^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$')
 # Explicit `*.` prefixes are rejected by the CLI.
 _WILDCARD_PREFIX = re.compile(r'^\*\.?')
 
+# `object-group fqdn / include …` accepts not only domain names but also
+# bare IPv4 hosts and IPv4 CIDR networks (e.g. `91.108.4.0/22` for
+# Telegram's MTProto subnets). We pass these through validation unchanged
+# so the catalog can carry mixed FQDN + CIDR entries in the same `include`
+# list — which is what Keenetic's running-config does too.
+_IPV4_CIDR_RE = re.compile(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:/(\d{1,2}))?$')
+
+
+def _is_ipv4_host_or_cidr(s: str) -> bool:
+    """True if ``s`` is a syntactically-valid IPv4 host (``X.X.X.X``) or
+    CIDR (``X.X.X.X/N``). Octets must be 0-255, prefix 0-32."""
+    m = _IPV4_CIDR_RE.match(s)
+    if not m:
+        return False
+    octets = [int(m.group(i)) for i in range(1, 5)]
+    if any(o > 255 for o in octets):
+        return False
+    prefix = m.group(5)
+    if prefix is not None:
+        p = int(prefix)
+        if p < 0 or p > 32:
+            return False
+    return True
+
 MAX_ENTRIES_PER_GROUP = 300
 """Soft limit for `include` entries in one `object-group fqdn`. Beyond this,
 Keenetic's dns-proxy starts to degrade (slow resolve, CPU spikes). Value is
@@ -72,6 +96,9 @@ def _to_idna(name: str) -> str:
 def normalize_fqdn(fqdn: str) -> tuple[str, str]:
     """Return (normalized, warning_or_empty).
 
+    - IPv4 host / CIDR (e.g. ``91.108.4.0/22``) passes through unchanged —
+      Keenetic's `object-group fqdn / include` accepts it alongside
+      domains; reject would be a false negative.
     - `*.example.com` → `example.com` + warning about auto-suffix-match.
     - Trailing dot stripped.
     - Unicode domain (`магазин.рф`) → Punycode (`xn--80aamfmxlh.xn--p1ai`)
@@ -79,6 +106,8 @@ def normalize_fqdn(fqdn: str) -> tuple[str, str]:
     - Invalid FQDNs returned unchanged with a warning.
     """
     name = fqdn.strip().rstrip('.')
+    if _is_ipv4_host_or_cidr(name):
+        return name, ''
     warn = ''
     m = _WILDCARD_PREFIX.match(name)
     if m:

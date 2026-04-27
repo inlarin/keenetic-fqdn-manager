@@ -108,6 +108,53 @@ def test_validate_fqdns_splits_correctly():
     assert len(invalid) == 2
 
 
+# ── IPv4 host / CIDR passthrough (Telegram MTProto subnets etc.) ─────────
+
+@pytest.mark.parametrize('entry', [
+    '149.154.160.0/20',
+    '91.108.4.0/22',
+    '91.108.8.0/22',
+    '8.8.8.8',          # bare host, /32 implied
+    '0.0.0.0/0',        # widest CIDR
+    '255.255.255.255',  # broadcast
+])
+def test_normalize_passes_ipv4_cidr_unchanged(entry):
+    """`object-group fqdn / include` accepts IPv4 host + CIDR. Validator
+    used to reject these as 'invalid FQDN' which silently dropped
+    Telegram's MTProto subnets at apply time."""
+    norm, warn = normalize_fqdn(entry)
+    assert norm == entry
+    assert warn == ''
+
+
+@pytest.mark.parametrize('bad', [
+    '10.0.0.1/abc',       # non-numeric prefix — '/' breaks FQDN fallthrough
+])
+def test_normalize_rejects_unmistakably_bad_cidr(bad):
+    """Strings that fail BOTH the IPv4-CIDR regex AND the FQDN syntax
+    (e.g. contain ``/``) must end up as 'invalid'. Note: malformed
+    numeric strings like ``256.0.0.1`` or ``10.0.0`` fall through to
+    FQDN syntax and are accepted there — Keenetic CLI will reject them
+    server-side. We don't try to second-guess that here."""
+    _, warn = normalize_fqdn(bad)
+    assert 'invalid' in warn
+
+
+def test_validate_fqdns_mixed_fqdn_and_cidr():
+    valid, warnings, invalid = validate_fqdns([
+        'telegram.org',
+        '149.154.160.0/20',
+        '91.108.4.0/22',
+        '8.8.8.8',
+        'bad..fqdn',
+    ])
+    assert 'telegram.org' in valid
+    assert '149.154.160.0/20' in valid
+    assert '91.108.4.0/22' in valid
+    assert '8.8.8.8' in valid
+    assert any('bad..fqdn' in i for i in invalid)
+
+
 # ── validate_group_name ───────────────────────────────────────────────────
 
 def test_group_name_valid():

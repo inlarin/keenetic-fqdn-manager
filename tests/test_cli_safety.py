@@ -96,5 +96,28 @@ def test_parse_interfaces_last_entry_kept():
 
 def test_iface_types_includes_core_vpn():
     # Smoke-check: the VPN types we actually manage are present.
-    for t in ('PPPoE', 'SSTP', 'Wireguard', 'OpenVPN', 'L2TP', 'PPTP'):
+    for t in ('PPPoE', 'SSTP', 'Wireguard', 'OpenVPN', 'L2TP', 'PPTP',
+              'ZeroTier', 'Bridge', 'OpkgTun'):
         assert t in IFACE_TYPES
+
+
+def test_iface_types_excludes_physical_layer():
+    # Physical / L2 / transport-layer ifaces are filtered out — they
+    # are almost never useful as FQDN-routing targets and create noise
+    # in the dropdown.
+    for t in ('GigabitEthernet', 'Vlan', 'Ipoe', 'Ipip', 'Gre'):
+        assert t not in IFACE_TYPES
+
+
+def test_parse_interfaces_keeps_opkgtun():
+    text = '''
+interface-name: OpkgTun0
+    type: OpkgTun
+    description: sing-box hynet TUN
+    link: up
+    connected: no
+'''
+    result = parse_interfaces_text(text)
+    assert len(result) == 1
+    assert result[0]['name'] == 'OpkgTun0'
+    assert result[0]['type'] == 'OpkgTun'

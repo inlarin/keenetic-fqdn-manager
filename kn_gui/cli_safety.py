@@ -27,14 +27,26 @@ def sanitize_cli_value(s: str) -> str:
 # Shared between the Telnet (`client.py`) and RCI (`rci_transport.py`)
 # transports so adding a new type is a one-line change.
 IFACE_TYPES: tuple[str, ...] = (
+    # VPN-style protocols — natural targets for selective FQDN routing.
     'PPPoE', 'SSTP', 'L2TP', 'PPTP', 'Wireguard', 'OpenVPN',
-    'ZeroTier', 'GigabitEthernet', 'Vlan', 'Ipoe', 'Ipip', 'Gre',
-    # `Bridge` was added so that NDM-managed bridge wrappers (e.g. Bridge2
-    # used to plumb an Entware-side SoftEther TAP into NDM dns-proxy) show
-    # up in the interface dropdown. Stock LAN bridges (Bridge0=Home,
-    # Bridge1=Guest) will appear too — distinguished by their description
-    # and the user picking the right one.
+    # ZeroTier overlay net (zt0) — sometimes used as a route target.
+    'ZeroTier',
+    # `Bridge` covers NDM-managed bridge wrappers (e.g. Bridge2 plumbing an
+    # Entware-side SoftEther TAP into NDM dns-proxy). Stock LAN bridges
+    # (Bridge0=Home, Bridge1=Guest) will appear too — distinguished by
+    # their description; the user picks the right one in the GUI.
     'Bridge',
+    # `OpkgTun` — TUN device created by an Entware client (sing-box,
+    # TrustTunnel, etc.) and registered into NDM via `interface OpkgTunN`
+    # so it gets first-class fwmark-routing-table treatment, exactly
+    # like SSTP/Wireguard interfaces. Without this entry the user can't
+    # bind dns-proxy route groups to OpkgTun{0..N} from the GUI.
+    'OpkgTun',
+    # NOTE: `GigabitEthernet`, `Vlan`, `Ipoe`, `Ipip`, `Gre` were
+    # intentionally removed. They are physical / L2 / transport-layer
+    # interfaces that almost never make sense as a `dns-proxy route ...`
+    # target (FQDN routing wants a *VPN-tunnel* iface, not eth0). Add
+    # them back here if a specific deployment needs them.
 )
 
 

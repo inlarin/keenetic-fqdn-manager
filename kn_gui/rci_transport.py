@@ -142,15 +142,29 @@ class KeeneticRCIClient:
         finally:
             self._rci.timeout = old_timeout
 
-    def run_expect(self, cmd: str, timeout: float = 10.0) -> str:
-        """Execute cmd and raise on error. Same semantics as Telnet version."""
-        text, ok = self.run(cmd, timeout=timeout)
-        if not ok:
-            raise RuntimeError(f'no response after: {cmd}')
-        if is_error_output(text):
-            last = text.strip().splitlines()[-1] if text.strip() else ''
-            raise RuntimeError(f'command {cmd!r} failed: {last[:200]}')
-        return text
+    def run_expect(self, cmd: str, timeout: float = 10.0,
+                   retries: int = 2) -> str:
+        """Execute cmd and raise on error. Same semantics as Telnet version.
+
+        ``retries`` controls how many extra attempts are made when the call
+        comes back without a prompt — i.e. the transport timeout. NDM under
+        contention (e.g. our Bridge2 watcher reading a fat running-config)
+        occasionally drops a single response; one or two retries with a
+        short backoff turn that into a normal latency spike instead of a
+        partial apply. Retries are skipped for ``is_error_output`` because
+        those are deterministic command-syntax failures."""
+        last_err: Optional[Exception] = None
+        for attempt in range(retries + 1):
+            text, ok = self.run(cmd, timeout=timeout)
+            if ok:
+                if is_error_output(text):
+                    last = text.strip().splitlines()[-1] if text.strip() else ''
+                    raise RuntimeError(f'command {cmd!r} failed: {last[:200]}')
+                return text
+            last_err = RuntimeError(f'no response after: {cmd}')
+            if attempt < retries:
+                time.sleep(0.5 * (attempt + 1))  # 0.5s, then 1.0s
+        raise last_err  # type: ignore[misc]
 
     # ── Introspection ─────────────────────────────────────────────────────
 

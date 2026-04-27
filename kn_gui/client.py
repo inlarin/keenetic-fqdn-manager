@@ -170,17 +170,29 @@ class KeeneticClient:
         text, idx = self._read_until_any([self.CONFIG_PROMPT], timeout)
         return text, idx >= 0
 
-    def run_expect(self, cmd: str, timeout: float = 10.0) -> str:
+    def run_expect(self, cmd: str, timeout: float = 10.0,
+                   retries: int = 2) -> str:
         """Execute cmd and raise if the prompt doesn't return or output
         contains an error marker. Used for interior operations where we
-        truly can't tolerate silent failure."""
-        text, ok = self.run(cmd, timeout=timeout)
-        if not ok:
-            raise RuntimeError(f'no prompt after: {cmd}')
-        if is_error_output(text):
-            last = text.strip().splitlines()[-1] if text.strip() else ''
-            raise RuntimeError(f'command {cmd!r} failed: {last[:200]}')
-        return text
+        truly can't tolerate silent failure.
+
+        ``retries`` controls how many extra attempts are made when the
+        prompt doesn't come back in time — typically NDM under contention
+        from a noisy concurrent client (e.g. our Bridge2 watcher reading
+        running-config). Real syntax errors (``is_error_output``) are not
+        retried — they would just fail again."""
+        last_err: Optional[Exception] = None
+        for attempt in range(retries + 1):
+            text, ok = self.run(cmd, timeout=timeout)
+            if ok:
+                if is_error_output(text):
+                    last = text.strip().splitlines()[-1] if text.strip() else ''
+                    raise RuntimeError(f'command {cmd!r} failed: {last[:200]}')
+                return text
+            last_err = RuntimeError(f'no prompt after: {cmd}')
+            if attempt < retries:
+                time.sleep(0.5 * (attempt + 1))  # 0.5s, then 1.0s
+        raise last_err  # type: ignore[misc]
 
     # ── Introspection ─────────────────────────────────────────────────────
     def list_interfaces(self) -> list[dict]:

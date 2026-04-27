@@ -1607,12 +1607,28 @@ class App(tk.Tk):
                 # traffic to domains in split-parts leaks via ISP.
                 for gn in created_names:
                     c.bind_fqdn_route(gn, iface, auto=True, reject=exclusive)
-                total_inc += len(includes)
+                # Per-include errors (timeouts that even retries didn't
+                # absorb, or syntax rejects) come back as `errs` lines
+                # prefixed with "include " — the entry never made it onto
+                # the router. Subtract them from the catalog count so the
+                # log reflects what actually landed, not what we tried.
+                include_failures = sum(1 for e in errs
+                                        if e.startswith('include '))
+                planned_inc = len(includes)
+                applied_inc = max(0, planned_inc - include_failures)
+                total_inc += applied_inc
                 suffix = ' [kill switch]' if exclusive else ''
-                self.ui_queue.put(('log', ('ok',
-                    f'✓ {svc["name"]}  →  {iface}{suffix}  '
-                    f'({len(svc.get("fqdn", []))} FQDN + '
-                    f'{len(svc.get("ipv4_cidr", []))} IPv4)')))
+                if include_failures == 0:
+                    marker, level = '✓', 'ok'
+                    count_str = (f'{len(svc.get("fqdn", []))} FQDN + '
+                                 f'{len(svc.get("ipv4_cidr", []))} IPv4')
+                else:
+                    marker, level = '⚠', 'warn'
+                    count_str = (f'{applied_inc}/{planned_inc} entries '
+                                 f'(rest dropped on transport timeout)')
+                self.ui_queue.put(('log', (level,
+                    f'{marker} {svc["name"]}  →  {iface}{suffix}  '
+                    f'({count_str})')))
                 for legacy in svc_legacy_routes(svc, ip_routes_snapshot):
                     c.delete_ip_route(legacy['network'], legacy['mask'],
                                        legacy['interface'])

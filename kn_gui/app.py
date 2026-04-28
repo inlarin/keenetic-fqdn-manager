@@ -106,6 +106,20 @@ class App(tk.Tk):
         # tickets and for confirming that an auto-update actually swapped
         # the binary).
         self.log(f'{APP_NAME} v{APP_VERSION} — готов к работе', 'info')
+        # Cache visibility: print the on-disk cache file path + entry count
+        # at startup so the user can see whether re-fetching is needed (vs.
+        # cache hit). With v3.6.2 cache moved to %APPDATA% so it survives
+        # exe redownloads — making this confirmation message meaningful.
+        try:
+            n = CACHE.num_entries()
+            sz = CACHE.size_bytes()
+            if n:
+                self.log(f'Кэш списков: {n} запис(и/ей), {sz/1024:.0f} KiB '
+                         f'— {CACHE.path}', 'info')
+            else:
+                self.log(f'Кэш списков пуст — {CACHE.path}', 'info')
+        except Exception as e:
+            self.log(f'Кэш недоступен: {e}', 'warn')
         # Non-blocking version check at startup — just notifies, never
         # installs. See updater.py for why self-update was removed.
         self._check_update_async()

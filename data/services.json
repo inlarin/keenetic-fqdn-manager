@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalog_version": "2.1.0",
+  "catalog_version": "2.2.0",
   "updated": "2026-04-17",
   "catalog_name": "Built-in default catalog",
   "services": [
@@ -1342,6 +1342,90 @@
           "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/youtube"
         }
       ]
+    },
+    {
+      "id": "rutracker",
+      "name": "RuTracker",
+      "category": "Torrents",
+      "description": "Крупнейший русскоязычный торрент-трекер; заблокирован в РФ.",
+      "fqdn": [
+        "rutracker.org",
+        "rutracker.net",
+        "rutracker.cc",
+        "static.t-ru.org",
+        "rutrk.org"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "nnmclub",
+      "name": "NNM-Club",
+      "category": "Torrents",
+      "description": "Закрытый торрент-трекер NNM-Club.",
+      "fqdn": [
+        "nnmclub.to",
+        "nnm-club.me",
+        "nnm-club.ws",
+        "nnmstatic.win"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "kinozal",
+      "name": "Kinozal",
+      "category": "Torrents",
+      "description": "Кинозал.ТВ — торренты по фильмам/сериалам.",
+      "fqdn": [
+        "kinozal.tv",
+        "kinozal.guru",
+        "kinozal.me",
+        "kinozaltv.life",
+        "kinozal-tv.appspot.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "rutor",
+      "name": "Rutor",
+      "category": "Torrents",
+      "description": "Открытый торрент-трекер rutor.org.",
+      "fqdn": [
+        "rutor.org",
+        "rutor.info",
+        "rutor.is",
+        "new-rutor.org"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "x1337",
+      "name": "1337x",
+      "category": "Torrents",
+      "description": "Англоязычный торрент-индекс 1337x.",
+      "fqdn": [
+        "1337x.to",
+        "1337x.st",
+        "1337x.tw",
+        "1337x.is",
+        "x1337x.eu",
+        "x1337x.ws",
+        "x1337x.se"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "thepiratebay",
+      "name": "The Pirate Bay",
+      "category": "Torrents",
+      "description": "Старейший публичный торрент-индекс.",
+      "fqdn": [
+        "thepiratebay.org",
+        "thepiratebay.se",
+        "thepiratebay10.org",
+        "tpb.party",
+        "piratebay.live"
+      ],
+      "ipv4_cidr": []
     }
   ]
 }

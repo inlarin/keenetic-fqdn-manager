@@ -36,17 +36,34 @@ def _exe_dir() -> Path:
 
 
 def _cache_dir() -> Path:
-    """Prefer folder next to the .exe / package. Fall back to %APPDATA% if
-    that folder is read-only (e.g. installed under Program Files)."""
-    candidate = _exe_dir() / 'cache'
+    """Cache lives under %APPDATA%/KeeneticFqdnManager/cache by default.
+
+    Earlier (≤ v3.6.1) the cache preferred a folder next to the .exe so it
+    was easy to spot. Problem: users often redownload the .exe from GitHub
+    to a different folder (or OneDrive on Desktop relocates it), and the
+    next-to-exe cache turns into a fresh empty folder every run — defeating
+    the whole point of caching. %APPDATA% is the canonical Windows location
+    for per-user mutable state; it survives every exe move/redownload.
+
+    A legacy `<exe-dir>/cache/cache.json` left over from old versions is
+    silently used as a one-time seed when %APPDATA% has no cache yet, so
+    upgrading users don't have to re-fetch everything."""
+    primary = CONFIG_DIR / 'cache'
     try:
-        candidate.mkdir(parents=True, exist_ok=True)
-        test = candidate / '.wtest'
-        test.write_text('')
-        test.unlink()
-        return candidate
+        primary.mkdir(parents=True, exist_ok=True)
+        # One-time seed from legacy location if APPDATA cache is empty.
+        legacy = _exe_dir() / 'cache' / 'cache.json'
+        target = primary / 'cache.json'
+        if legacy.exists() and not target.exists():
+            try:
+                target.write_bytes(legacy.read_bytes())
+            except Exception:
+                pass
+        return primary
     except Exception:
-        fb = CONFIG_DIR / 'cache'
+        # Ultra-fallback: directory next to the exe. Almost never reached —
+        # APPDATA write fails only on truly broken setups.
+        fb = _exe_dir() / 'cache'
         fb.mkdir(parents=True, exist_ok=True)
         return fb
 

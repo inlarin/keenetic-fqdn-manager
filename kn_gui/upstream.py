@@ -195,6 +195,8 @@ def resolve_ipv4_provider(spec: str) -> tuple[list[str], str]:
         return fetch_github_meta(), 'github'
     if key == 'fastly':
         return fetch_fastly(), 'fastly'
+    if key == 'telegram':
+        return fetch_telegram(), 'telegram'
     raise ValueError(f'Unknown provider: {spec}')
 
 

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "catalog_version": "2.2.0",
-  "updated": "2026-04-17",
+  "catalog_version": "2.3.0",
+  "updated": "2026-04-29",
   "catalog_name": "Built-in default catalog",
   "services": [
     {
@@ -566,6 +566,10 @@
         {
           "type": "v2fly",
           "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/discord"
+        },
+        {
+          "type": "plain",
+          "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/discord.lst"
         }
       ]
     },
@@ -652,6 +656,10 @@
         {
           "type": "v2fly",
           "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/telegram"
+        },
+        {
+          "type": "plain",
+          "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/telegram.lst"
         }
       ]
     },
@@ -1085,6 +1093,10 @@
         {
           "type": "v2fly",
           "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/facebook"
+        },
+        {
+          "type": "plain",
+          "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/meta.lst"
         }
       ]
     },
@@ -1168,6 +1180,10 @@
         {
           "type": "v2fly",
           "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/tiktok"
+        },
+        {
+          "type": "plain",
+          "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/tiktok.lst"
         }
       ]
     },
@@ -1193,6 +1209,10 @@
         {
           "type": "v2fly",
           "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/twitter"
+        },
+        {
+          "type": "plain",
+          "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/twitter.lst"
         }
       ]
     },
@@ -1340,6 +1360,10 @@
         {
           "type": "v2fly",
           "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/youtube"
+        },
+        {
+          "type": "plain",
+          "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/youtube.lst"
         }
       ]
     },
@@ -1426,6 +1450,205 @@
         "piratebay.live"
       ],
       "ipv4_cidr": []
+    },
+    {
+      "id": "news_meduza",
+      "name": "Meduza",
+      "category": "News",
+      "description": "Независимое русскоязычное издание (Латвия). Заблокировано в РФ.",
+      "fqdn": [
+        "meduza.io",
+        "support.meduza.io"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "news_dw",
+      "name": "Deutsche Welle",
+      "category": "News",
+      "description": "Немецкая международная телерадиокомпания. Заблокирована в РФ.",
+      "fqdn": [
+        "dw.com",
+        "www.dw.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "news_rferl",
+      "name": "Радио Свобода / RFE/RL",
+      "category": "News",
+      "description": "Радио Свобода, RFE/RL, Настоящее Время. Заблокированы в РФ.",
+      "fqdn": [
+        "svoboda.org",
+        "www.svoboda.org",
+        "rferl.org",
+        "www.rferl.org",
+        "currenttime.tv",
+        "www.currenttime.tv"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "news_holod",
+      "name": "Holod Media",
+      "category": "News",
+      "description": "Независимое издание о жизни в России. Заблокировано в РФ.",
+      "fqdn": [
+        "holod.media",
+        "www.holod.media"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "news_mediazona",
+      "name": "Медиазона",
+      "category": "News",
+      "description": "Издание о судах, тюрьмах, правосудии. Заблокировано в РФ.",
+      "fqdn": [
+        "zona.media",
+        "en.zona.media",
+        "mediazona.ca"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "news_insider",
+      "name": "The Insider",
+      "category": "News",
+      "description": "Расследовательское издание The Insider. Заблокировано в РФ.",
+      "fqdn": [
+        "theins.ru",
+        "www.theins.ru",
+        "theins.press"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "news_novaya",
+      "name": "Новая газета Европа",
+      "category": "News",
+      "description": "Европейское продолжение «Новой газеты». Заблокировано в РФ.",
+      "fqdn": [
+        "novayagazeta.eu",
+        "www.novayagazeta.eu"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "flibusta",
+      "name": "Флибуста",
+      "category": "Books",
+      "description": "Свободная онлайн-библиотека. Заблокирована в РФ.",
+      "fqdn": [
+        "flibusta.is",
+        "flibusta.site",
+        "flibusta.app",
+        "flibusta.club"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "libgen",
+      "name": "Library Genesis",
+      "category": "Books",
+      "description": "LibGen — крупный архив научных книг и статей.",
+      "fqdn": [
+        "libgen.is",
+        "libgen.rs",
+        "libgen.li",
+        "libgen.gs",
+        "libgen.la",
+        "libgen.lc"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "z_library",
+      "name": "Z-Library",
+      "category": "Books",
+      "description": "Z-Library — крупная электронная библиотека книг и статей.",
+      "fqdn": [
+        "z-lib.io",
+        "z-library.sk",
+        "1lib.sk",
+        "singlelogin.re"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "tor_project",
+      "name": "Tor Project",
+      "category": "VPN",
+      "description": "Сайт Tor Project, мосты, snowflake — для скачивания клиента и получения мостов.",
+      "fqdn": [
+        "torproject.org",
+        "www.torproject.org",
+        "blog.torproject.org",
+        "support.torproject.org",
+        "dist.torproject.org",
+        "check.torproject.org",
+        "bridges.torproject.org",
+        "gettor.torproject.org",
+        "snowflake.torproject.org"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "nordvpn",
+      "name": "NordVPN",
+      "category": "VPN",
+      "description": "NordVPN — сайт, API, загрузки клиентов.",
+      "fqdn": [
+        "nordvpn.com",
+        "www.nordvpn.com",
+        "api.nordvpn.com",
+        "downloads.nordcdn.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "expressvpn",
+      "name": "ExpressVPN",
+      "category": "VPN",
+      "description": "ExpressVPN — сайт и загрузки клиентов.",
+      "fqdn": [
+        "expressvpn.com",
+        "www.expressvpn.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "mullvad",
+      "name": "Mullvad VPN",
+      "category": "VPN",
+      "description": "Mullvad VPN — сайт и API. Proton VPN — в Productivity (proton).",
+      "fqdn": [
+        "mullvad.net",
+        "www.mullvad.net",
+        "api.mullvad.net"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "hdrezka",
+      "name": "HDRezka",
+      "category": "Video",
+      "description": "Российский стриминг фильмов и сериалов. Множество зеркал; itdoginfo подтягивает актуальный список.",
+      "fqdn": [
+        "hdrezka.ag",
+        "rezka.ag",
+        "hdrezka.cm",
+        "hdrezka.tv",
+        "hdrezka.me",
+        "hdrezka.fan"
+      ],
+      "ipv4_cidr": [],
+      "upstream": [
+        {
+          "type": "plain",
+          "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/hdrezka.lst"
+        }
+      ]
     }
   ]
 }

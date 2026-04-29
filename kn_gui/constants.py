@@ -5,7 +5,7 @@ import re
 from enum import Enum
 
 APP_NAME = 'Keenetic FQDN Manager'
-APP_VERSION = '3.6.2'
+APP_VERSION = '3.6.3'
 
 DEFAULT_ROUTER = '192.168.32.1'
 DEFAULT_USER = 'admin'
@@ -31,7 +31,8 @@ GROUP_NAME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_]{0,31}$')
 CATEGORY_ICON = {
     'AI': '🤖', 'Video': '📺', 'Music': '🎵', 'Messaging': '💬',
     'Social': '👥', 'Dev': '⚙', 'Productivity': '📝', 'Content': '📰',
-    'Gaming': '🎮', 'Payment': '💳', 'Other': '📦',
+    'Gaming': '🎮', 'Payment': '💳', 'News': '🗞', 'Books': '📚',
+    'VPN': '🛡', 'Other': '📦',
 }
 
 # TTLs for DiskCache entries (seconds).

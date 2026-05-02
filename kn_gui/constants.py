@@ -32,7 +32,7 @@ CATEGORY_ICON = {
     'AI': '🤖', 'Video': '📺', 'Music': '🎵', 'Messaging': '💬',
     'Social': '👥', 'Dev': '⚙', 'Productivity': '📝', 'Content': '📰',
     'Gaming': '🎮', 'Payment': '💳', 'News': '🗞', 'Books': '📚',
-    'VPN': '🛡', 'Other': '📦',
+    'VPN': '🛡', 'FPV': '🚁', 'Torrents': '🧲', 'Other': '📦',
 }
 
 # TTLs for DiskCache entries (seconds).

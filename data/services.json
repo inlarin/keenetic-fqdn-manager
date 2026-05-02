@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "catalog_version": "2.5.0",
-  "updated": "2026-04-29",
+  "catalog_version": "2.7.0",
+  "updated": "2026-05-02",
   "catalog_name": "Built-in default catalog",
   "services": [
     {
@@ -546,6 +546,33 @@
           "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/steam"
         }
       ]
+    },
+    {
+      "id": "expresslrs",
+      "name": "ExpressLRS Configurator",
+      "category": "FPV",
+      "description": "Десктоп-конфигуратор ExpressLRS: выбор прошивки, облачный флэш (BinaryFlashingStrategy), git clone репозиториев ExpressLRS и Backpack. Не включает домены PlatformIO (локальная сборка из исходников).",
+      "fqdn": [
+        "api.github.com",
+        "github.com",
+        "codeload.github.com",
+        "raw.githubusercontent.com",
+        "objects.githubusercontent.com",
+        "artifactory.expresslrs.org"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "betaflight",
+      "name": "Betaflight Configurator",
+      "category": "FPV",
+      "description": "Web-конфигуратор Betaflight: прошивка, настройка и тюнинг полётного контроллера.",
+      "fqdn": [
+        "app.betaflight.com",
+        "build.betaflight.com",
+        "analytics.betaflight.com"
+      ],
+      "ipv4_cidr": []
     },
     {
       "id": "discord",

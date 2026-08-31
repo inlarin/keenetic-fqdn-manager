@@ -1,34 +1,9 @@
 {
   "schema_version": 1,
-  "catalog_version": "2.7.0",
-  "updated": "2026-05-02",
+  "catalog_version": "2.8.0",
+  "updated": "2026-08-31",
   "catalog_name": "Built-in default catalog",
   "services": [
-    {
-      "id": "chatgpt",
-      "name": "ChatGPT / OpenAI",
-      "category": "AI",
-      "description": "ChatGPT, OpenAI API, DALL-E, Sora.",
-      "fqdn": [
-        "chatgpt.com",
-        "openai.com",
-        "chat.openai.com",
-        "api.openai.com",
-        "platform.openai.com",
-        "auth.openai.com",
-        "cdn.openai.com",
-        "oaistatic.com",
-        "oaiusercontent.com",
-        "sora.com"
-      ],
-      "ipv4_cidr": [],
-      "upstream": [
-        {
-          "type": "v2fly",
-          "url": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/openai"
-        }
-      ]
-    },
     {
       "id": "claude",
       "name": "Claude / Anthropic",
@@ -107,7 +82,17 @@
         "gemini.google.com",
         "aistudio.google.com",
         "ai.google.dev",
-        "generativelanguage.googleapis.com"
+        "generativelanguage.googleapis.com",
+        "alkalimakersuite-pa.clients6.google.com",
+        "makersuite.google.com",
+        "aiplatform.googleapis.com",
+        "ai.dev",
+        "apis.google.com",
+        "ogs.google.com",
+        "waa-pa.clients6.google.com",
+        "jules.google.com",
+        "notebooklm.google.com",
+        "labs.google"
       ],
       "ipv4_cidr": []
     },
@@ -314,7 +299,7 @@
     },
     {
       "id": "github",
-      "name": "GitHub",
+      "name": "GitHub / EdgeTX Buddy",
       "category": "Dev",
       "description": "GitHub web + Git + Actions.",
       "fqdn": [
@@ -324,7 +309,10 @@
         "githubassets.com",
         "api.github.com",
         "codeload.github.com",
-        "objects.githubusercontent.com"
+        "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+        "raw.githubusercontent.com",
+        "cloudbuild.edgetx.org"
       ],
       "ipv4_cidr": [],
       "ipv4_providers": [
@@ -571,6 +559,18 @@
         "app.betaflight.com",
         "build.betaflight.com",
         "analytics.betaflight.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "team_blacksheep",
+      "name": "Team BlackSheep (TBS)",
+      "category": "FPV",
+      "description": "TBS: радиолинки Crossfire/Tracer, TBS Agent, прошивки/конфигураторы и магазин.",
+      "fqdn": [
+        "team-blacksheep.com",
+        "www.team-blacksheep.com",
+        "agent.blacksheep.com.sg"
       ],
       "ipv4_cidr": []
     },
@@ -1671,6 +1671,227 @@
           "url": "https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/hdrezka.lst"
         }
       ]
+    },
+    {
+      "id": "ntc_party",
+      "name": "ntc.party",
+      "category": "Other",
+      "description": "ntc.party",
+      "fqdn": [
+        "ntc.party"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "edgetx",
+      "name": "EdgeTX",
+      "category": "FPV",
+      "description": "EdgeTX",
+      "fqdn": [
+        "edgetx.org"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "hackmd",
+      "name": "HackMD",
+      "category": "AI",
+      "description": "HackMD",
+      "fqdn": [
+        "hackmd.io",
+        "www.hackmd.io",
+        "api.hackmd.io",
+        "status.hackmd.io"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "amnezia",
+      "name": "AmneziaVPN",
+      "category": "VPN",
+      "description": "AmneziaVPN",
+      "fqdn": [
+        "amnezia.org",
+        "www.amnezia.org"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "stripe_com",
+      "name": "Stripe",
+      "category": "Other",
+      "description": "Stripe",
+      "fqdn": [
+        "stripe.com",
+        "invoice.stripe.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "lilygo",
+      "name": "lilygo.cc",
+      "category": "Other",
+      "description": "lilygo.cc",
+      "fqdn": [
+        "lilygo.cc"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "issabel",
+      "name": "issabel.org",
+      "category": "Other",
+      "description": "issabel.org",
+      "fqdn": [
+        "issabel.org"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "linphone",
+      "name": "Linphone",
+      "category": "Messaging",
+      "description": "Linphone",
+      "fqdn": [
+        "linphone.org",
+        "www.linphone.org",
+        "download.linphone.org"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "silabs",
+      "name": "Silabs",
+      "category": "Other",
+      "description": "Silabs",
+      "fqdn": [
+        "silabs.com",
+        "www.silabs.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT / OpenAI",
+      "category": "AI",
+      "description": "ChatGPT / OpenAI",
+      "fqdn": [
+        "chatgpt.com",
+        "auth.openai.com",
+        "api.openai.com",
+        "openai.com",
+        "cdn.oaistatic.com",
+        "files.oaiusercontent.com",
+        "platform.openai.com",
+        "oaistatic.com",
+        "oaiusercontent.com",
+        "chat.com",
+        "ios.chat.openai.com",
+        "ai.com",
+        "chatgpt.livekit.cloud",
+        "turn.livekit.cloud",
+        "auth0.openai.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "ai_bench",
+      "name": "AI benchmark/news sites",
+      "category": "AI",
+      "description": "AI benchmark/news sites",
+      "fqdn": [
+        "llm-stats.com",
+        "www.llm-stats.com",
+        "techsy.io",
+        "www.techsy.io",
+        "llmbase.ai",
+        "www.llmbase.ai",
+        "latent.space",
+        "www.latent.space",
+        "digitalapplied.com",
+        "www.digitalapplied.com",
+        "promptquorum.com",
+        "www.promptquorum.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "ardupilot",
+      "name": "ArduPilot (firmware + docs)",
+      "category": "FPV",
+      "description": "ArduPilot (firmware + docs)",
+      "fqdn": [
+        "firmware.ardupilot.org",
+        "ardupilot.org",
+        "www.ardupilot.org"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "autodesk",
+      "name": "Autodesk",
+      "category": "Productivity",
+      "description": "Autodesk",
+      "fqdn": [
+        "www.autodesk.com",
+        "autodesk.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "esc_configurator",
+      "name": "ESC Configurator",
+      "category": "FPV",
+      "description": "ESC Configurator",
+      "fqdn": [
+        "esc-configurator.com",
+        "www.esc-configurator.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "oscarliang",
+      "name": "oscarliang",
+      "category": "Other",
+      "description": "oscarliang",
+      "fqdn": [
+        "oscarliang.com",
+        "www.oscarliang.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "qgc_terrain",
+      "name": "QGroundControl terrain (Auterion)",
+      "category": "FPV",
+      "description": "QGroundControl terrain (Auterion)",
+      "fqdn": [
+        "terrain-ce.suite.auterion.com",
+        "griffin-service-ce.prod.suite.auterion.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "st_com",
+      "name": "STMicroelectronics",
+      "category": "Dev",
+      "description": "STMicroelectronics",
+      "fqdn": [
+        "st.com",
+        "www.st.com",
+        "sw-center.st.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "forum_ru_board",
+      "name": "forum.ru-board.com",
+      "category": "Other",
+      "description": "forum.ru-board.com",
+      "fqdn": [
+        "forum.ru-board.com"
+      ],
+      "ipv4_cidr": []
     }
   ]
 }

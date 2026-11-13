@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "catalog_version": "2.8.0",
-  "updated": "2026-08-31",
+  "catalog_version": "2.8.2",
+  "updated": "2026-11-13",
   "catalog_name": "Built-in default catalog",
   "services": [
     {
@@ -656,9 +656,6 @@
         "telegra.ph",
         "tdesktop.com",
         "web.telegram.org",
-        "k.web.telegram.org",
-        "z.web.telegram.org",
-        "a.web.telegram.org",
         "venus.web.telegram.org",
         "aurora.web.telegram.org",
         "vesta.web.telegram.org",
@@ -1398,7 +1395,7 @@
         "rutracker.org",
         "rutracker.net",
         "rutracker.cc",
-        "static.t-ru.org",
+        "rutracker.wiki",
         "rutrk.org"
       ],
       "ipv4_cidr": []
@@ -1743,7 +1740,7 @@
       "category": "Other",
       "description": "issabel.org",
       "fqdn": [
-        "issabel.org"
+        "www.issabel.org"
       ],
       "ipv4_cidr": []
     },
@@ -1766,7 +1763,9 @@
       "description": "Silabs",
       "fqdn": [
         "silabs.com",
-        "www.silabs.com"
+        "www.silabs.com",
+        "community.silabs.com",
+        "docs.silabs.com"
       ],
       "ipv4_cidr": []
     },
@@ -1890,6 +1889,97 @@
       "description": "forum.ru-board.com",
       "fqdn": [
         "forum.ru-board.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "arm_toolchain",
+      "name": "ARM developer (toolchain)",
+      "category": "Dev",
+      "description": "ARM developer (toolchain)",
+      "fqdn": [
+        "developer.arm.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "datasheets",
+      "name": "Chip datasheets (ST/TDK/Bosch/ADI/u-blox)",
+      "category": "Docs",
+      "description": "Chip datasheets (ST/TDK/Bosch/ADI/u-blox)",
+      "fqdn": [
+        "st.com",
+        "www.st.com",
+        "invensense.tdk.com",
+        "tdk.com",
+        "bosch-sensortec.com",
+        "www.bosch-sensortec.com",
+        "analog.com",
+        "www.analog.com",
+        "u-blox.com",
+        "content.u-blox.com",
+        "cdn.sparkfun.com",
+        "courses.cs.washington.edu",
+        "datasheet.lcsc.com",
+        "www.lcsc.com",
+        "media.digikey.com",
+        "datasheet.octopart.com",
+        "wch-ic.com",
+        "www.wch-ic.com",
+        "dl.djicdn.com",
+        "ftdichip.com",
+        "www.ftdichip.com",
+        "storage-us.xtool.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "virustotal",
+      "name": "VirusTotal",
+      "category": "Security",
+      "description": "VirusTotal",
+      "fqdn": [
+        "virustotal.com",
+        "www.virustotal.com"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "docs_rw",
+      "name": "docs.rw",
+      "category": "Other",
+      "description": "docs.rw",
+      "fqdn": [
+        "docs.rw"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "vpngate",
+      "name": "VPN Gate (SoftEther public relays)",
+      "category": "Network",
+      "description": "VPN Gate (SoftEther public relays)",
+      "fqdn": [
+        "vpngate.net",
+        "www.vpngate.net"
+      ],
+      "ipv4_cidr": []
+    },
+    {
+      "id": "ubiquiti",
+      "name": "Ubiquiti (docs, firmware, community)",
+      "category": "Other",
+      "description": "Ubiquiti (ui.com)",
+      "fqdn": [
+        "ui.com",
+        "dl.ubnt.com",
+        "dl.ui.com",
+        "www.ui.com",
+        "community.ui.com",
+        "help.ui.com",
+        "fw-download.ubnt.com",
+        "fw-update.ubnt.com",
+        "fw-download.ui.com"
       ],
       "ipv4_cidr": []
     }
